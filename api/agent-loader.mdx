@@ -41,23 +41,27 @@ loader = AgentLoader(concurrent=True)
 Dispatch to the right loader based on file extension. The simplest entry point.
 
 ```python
-def auto(self, file_path: str, *args, **kwargs) -> List[Agent]
+def auto(self, file_path: str, *args, **kwargs)
 ```
 
 **Parameters:**
 - `file_path` (str): Path to `.md`, `.yaml`, or `.csv` file.
 - `*args`, `**kwargs`: Forwarded to the underlying loader.
 
-**Returns:** `List[Agent]`
+**Returns:** Markdown and CSV loading return a list of agents. YAML loading
+uses `return_type="auto"` by default: it returns one `Agent` for a one-agent
+file, a list for multiple agents, or a `SwarmRouter` when `swarm_architecture`
+is configured. Do not assume every result is iterable.
 
 **Raises:** `ValueError` if the file extension is not `.md`, `.yaml`, or `.csv`.
 
 ### load_single_agent()
 
-Alias for `auto()` — loads a single file by dispatching on extension.
+Alias for `auto()` — loads a single file by dispatching on extension and keeps
+the same format-dependent return value.
 
 ```python
-def load_single_agent(self, *args, **kwargs) -> List[Agent]
+def load_single_agent(self, *args, **kwargs)
 ```
 
 ### load_multiple_agents()
@@ -70,13 +74,15 @@ def load_multiple_agents(
     file_paths: List[str],
     *args,
     **kwargs,
-) -> List[List[Agent]]
+)
 ```
 
 **Parameters:**
 - `file_paths` (List[str]): Paths to agent definition files.
 
-**Returns:** List of agent lists, one per input file.
+**Returns:** One loaded result per input file, in input order. Each YAML result
+can be an agent, an agent list, or a router; the outer list does not normalize
+those values into agent lists.
 
 ### load_agent_from_markdown()
 
@@ -126,7 +132,7 @@ def load_agents_from_yaml(
     yaml_file: str,
     return_type: ReturnTypes = "auto",
     **kwargs,
-) -> List[Agent]
+)
 ```
 
 <ParamField path="yaml_file" type="str">
@@ -136,6 +142,19 @@ def load_agents_from_yaml(
 <ParamField path="return_type" type="ReturnTypes" default='"auto"'>
   Controls the return shape from the underlying YAML loader.
 </ParamField>
+
+The common return modes are:
+
+| `return_type` | Result |
+|---|---|
+| `"auto"` | Configured router, otherwise one agent or a list of agents |
+| `"agents"` | One agent when the file defines one; otherwise a list of agents |
+| `"both"` | `(router_or_agents, agents)`, where the second item is always an agent list |
+
+Use `"both"` and unpack its second item when passing YAML-defined agents into
+another workflow. Switching to `"agents"` alone does not make the single-agent
+case a list. These modes construct objects without running a task;
+`"swarm"` and `"run_swarm"` execute the configured swarm task instead.
 
 ### load_many_agents_from_yaml()
 
@@ -147,8 +166,12 @@ def load_many_agents_from_yaml(
     yaml_files: List[str],
     return_types: List[ReturnTypes] = ["auto"],
     **kwargs,
-) -> List[Agent]
+)
 ```
+
+Each entry is the result for one YAML file, using its corresponding
+`return_types` entry. The result is not a flattened agent list. Pass one return
+type per file; the current one-element default does not cover multiple files.
 
 ### load_agents_from_csv()
 
@@ -182,7 +205,7 @@ from swarms import AgentLoader
 loader = AgentLoader()
 
 # Each file uses its own format; auto() picks the right loader
-research_agents = loader.auto("agents/research_team.yaml")
+research_result = loader.auto("agents/research_team.yaml")  # Agent, list, or router
 support_agents = loader.auto("agents/support_squad.md")
 sales_agents = loader.auto("agents/sales_reps.csv")
 ```
@@ -194,11 +217,16 @@ from swarms import AgentLoader
 
 loader = AgentLoader()
 
-all_agents = loader.load_multiple_agents([
-    "agents/research_team.yaml",
-    "agents/support_squad.md",
-    "agents/sales_reps.csv",
-])
+_, research_agents = loader.load_agents_from_yaml(
+    "agents/research_team.yaml", return_type="both"
+)
+all_agents = [
+    research_agents,
+    *loader.load_multiple_agents([
+        "agents/support_squad.md",
+        "agents/sales_reps.csv",
+    ]),
+]
 
 # all_agents is a list-of-lists; one entry per file
 for file_agents in all_agents:
@@ -230,7 +258,9 @@ agents = loader.load_agents_from_markdown(
 from swarms import AgentLoader, SequentialWorkflow
 
 loader = AgentLoader()
-agents = loader.auto("agents/research_pipeline.yaml")
+_, agents = loader.load_agents_from_yaml(
+    "agents/research_pipeline.yaml", return_type="both"
+)
 
 workflow = SequentialWorkflow(agents=agents, max_loops=1)
 result = workflow.run("Summarize the current state of multi-agent research")
