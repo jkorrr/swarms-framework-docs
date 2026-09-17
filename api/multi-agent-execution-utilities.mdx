@@ -334,7 +334,7 @@ def batch_agent_execution(
 
 **Returns:** List of results in the order the input pairings were submitted; failed tasks yield `None` in that slot.
 
-**Raises:** `BatchAgentExecutionError` wrapping any internal failure. Mismatched `len(agents)` vs `len(tasks)` is wrapped from the inner `ValueError`.
+**Raises:** `BatchAgentExecutionError` for batch setup or management failures, including mismatched task or image list lengths. Individual agent failures produce `None` as described above.
 
 ```python
 from swarms import Agent
