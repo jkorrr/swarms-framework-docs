@@ -138,7 +138,10 @@ This method processes all functions in the tools list, validates them for proper
 Search for a tool by name and execute it with the provided response.
 
 ```python
-result = tool.execute_tool_by_name("add", '{"a": 1, "b": 2}')
+result = tool.execute_tool_by_name(
+    "add",
+    '{"name": "add", "parameters": {"a": 1, "b": 2}}'
+)
 ```
 
 <ParamField path="tool_name" type="str" required>
@@ -146,12 +149,21 @@ result = tool.execute_tool_by_name("add", '{"a": 1, "b": 2}')
 </ParamField>
 
 <ParamField path="response" type="str" required>
-  JSON response string containing execution parameters
+  JSON call containing a matching `name` and a `parameters` object
 </ParamField>
 
-<ResponseField name="return" type="Any">
-  The result of executing the tool
+<ResponseField name="return" type="Union[str, dict]">
+  JSON string containing `results` and `summary`, or an error dictionary if parsing fails
 </ResponseField>
+
+`tool_name` selects the registered callable, but `response` must still include
+its name. Passing only `{"a": 1, "b": 2}` runs no function and returns empty
+results.
+
+Decode the returned JSON before reading `results[tool_name]`. Values in
+`results` are strings, including numeric return values. Tool failures can
+also appear there as error text after retries; a returned envelope alone does
+not establish that the call succeeded.
 
 ## Tool Registry
 
@@ -378,6 +390,8 @@ Raised when tool type hints are missing or invalid.
 ## Example: Complete Tool Setup
 
 ```python
+import json
+
 from swarms.tools import BaseTool
 from pydantic import BaseModel
 
@@ -423,7 +437,11 @@ tool_manager.convert_funcs_into_tools()
 # Execute a tool
 result = tool_manager.execute_tool_by_name(
     "calculate",
-    '{"a": 10, "b": 5, "operation": "multiply"}'
+    json.dumps({
+        "name": "calculate",
+        "parameters": {"a": 10, "b": 5, "operation": "multiply"},
+    })
 )
-print(result)  # 50
+payload = json.loads(result)
+print(payload["results"]["calculate"])  # 50 (a string)
 ```
