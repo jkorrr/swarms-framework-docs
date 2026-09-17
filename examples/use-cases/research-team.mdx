@@ -224,25 +224,53 @@ researcher_agent = Agent(
 
 ### Parallel Research Tasks
 
-For independent research streams:
+Pair each topic with its own agent, then submit the pairs together. A list
+comprehension that calls `ConcurrentWorkflow.run()` once per topic still waits
+for each run before starting the next. A one-agent workflow does not make those
+separate calls concurrent.
 
 ```python
-from swarms import ConcurrentWorkflow
+from swarms import Agent
+from swarms.structs.multi_agent_exec import run_agents_with_different_tasks
 
-# Research multiple topics in parallel
 topics = [
     "AI in diagnostics",
     "AI in drug discovery",
     "AI in patient care",
 ]
 
-parallel_research = ConcurrentWorkflow(
-    agents=[researcher_agent],
-    max_loops=1,
+agent_task_pairs = [
+    (
+        Agent(
+            agent_name=f"Topic-Researcher-{index}",
+            system_prompt="Research the assigned topic and clearly state any uncertainties.",
+            model_name="claude-sonnet-4-6",
+            max_loops=1,
+            persistent_memory=False,
+        ),
+        topic,
+    )
+    for index, topic in enumerate(topics, start=1)
+]
+
+results = run_agents_with_different_tasks(
+    agent_task_pairs,
+    batch_size=3,
+    max_workers=3,
 )
 
-results = [parallel_research.run(topic) for topic in topics]
+for topic, result in zip(topics, results):
+    if isinstance(result, Exception):
+        print(f"{topic}: research failed: {result}")
+    else:
+        print(f"{topic}: {result}")
 ```
+
+Each agent keeps a separate conversation. The helper returns results in input
+order, even when topics finish in a different order; a failed call occupies its
+result slot as an exception. `batch_size` limits each group of topic pairs and
+`max_workers` limits simultaneous calls within that group. Reduce either value
+to lower concurrency when your provider has tight rate limits.
 
 ### Cache Common Research
 
