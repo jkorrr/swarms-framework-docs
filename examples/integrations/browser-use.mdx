@@ -8,8 +8,12 @@ This example demonstrates how to use browser automation capabilities within the 
 
 ## Install
 
+Use Python 3.11 or newer. Install the Python packages and the local Chromium
+browser before running the example:
+
 ```bash
-pip3 install -U swarms browser-use python-dotenv langchain-openai
+python -m pip install -U swarms browser-use python-dotenv uv
+browser-use install
 ```
 
 ## Environment Variables
@@ -21,12 +25,16 @@ OPENAI_API_KEY="your_openai_api_key_here"
 
 ## Main Code
 
+Import `ChatOpenAI` from `browser_use`. Its native adapter implements the model
+interface that `BrowserAgent` expects; the similarly named LangChain class is
+not a drop-in replacement. This example's model initialization was checked with
+Browser Use 0.13.10.
+
 ```python 
 import asyncio
 
-from browser_use import Agent as BrowserAgent
+from browser_use import Agent as BrowserAgent, ChatOpenAI
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
 
 from swarms import Agent
 
@@ -106,7 +114,7 @@ def browser_agent_tool(task: str):
 
 
 agent = Agent(
-    name = "Browser Agent",
+    agent_name = "Browser Agent",
     model_name = "gpt-5.4",
     tools = [browser_agent_tool],
 )
