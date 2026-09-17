@@ -53,11 +53,13 @@ digest_agent = Agent(
     max_loops=1,
 )
 
-CronJob.run_many([
+schedules = [
     {"agent": price_agent,   "interval": "30seconds", "task": "Check the BTC price."},
     {"agent": anomaly_agent, "interval": "10minutes", "task": "Scan recent data for anomalies."},
     {"agent": digest_agent,  "interval": "1hour",     "task": "Summarise the last hour."},
-])
+]
+
+CronJob.run_many(schedules)
 ```
 
 ## The schedule spec
@@ -74,7 +76,50 @@ Each entry is a mapping.
 | `max_consecutive_errors` | no | Error budget for *this* agent only |
 | `kwargs` | no | Dict forwarded to this agent's `run`, e.g. `{"img": "chart.png"}` |
 
-A missing required key raises `CronJobConfigError` naming the index and the key, before anything starts.
+A missing or false-valued required key raises `CronJobConfigError` naming the
+index and the key. Validation happens one entry at a time: earlier jobs may
+already be running when a later entry fails. In that case, `run_many` raises
+before returning the job list, so the caller does not receive those job handles.
+
+### Check required keys before starting
+
+For a schedule list assembled from configuration or application code, check all
+required keys before calling `run_many`. This catches a missing key in a later
+entry before any scheduler starts. Replace the earlier
+`CronJob.run_many(schedules)` call with the following block:
+
+```python
+from swarms.structs.cron_job import CronJob, CronJobConfigError
+
+
+def validate_required_schedule_keys(schedules):
+    if not schedules:
+        raise CronJobConfigError("run_many requires at least one schedule")
+
+    for index, spec in enumerate(schedules):
+        missing = [
+            key for key in ("agent", "interval", "task") if not spec.get(key)
+        ]
+        if missing:
+            raise CronJobConfigError(
+                f"schedules[{index}] is missing required key(s): {', '.join(missing)}"
+            )
+
+
+# Use the schedule mappings defined above.
+validate_required_schedule_keys(schedules)
+jobs = CronJob.run_many(schedules, block=False)
+try:
+    input("Schedules running. Press Enter to stop.\n")
+finally:
+    CronJob.stop_many(jobs)
+```
+
+This helper expects a list of mappings and checks only the three required keys,
+using the same truth-value check as `run_many`. It does not validate interval
+syntax, agent behavior, callbacks, or forwarded `kwargs`, and it does not make
+startup atomic. Validate those values separately before starting jobs. Once
+`run_many` returns successfully, keep its handles and stop the jobs in `finally`.
 
 ## Isolation is the point
 
