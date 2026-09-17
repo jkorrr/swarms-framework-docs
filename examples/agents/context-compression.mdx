@@ -1,10 +1,10 @@
 ---
 title: 'Context Compression'
-description: 'Automatically summarize agent memory when it nears the context window, while archiving the full transcript.'
+description: 'Summarize agent memory near the context limit, and opt in to disk-backed archives when you need them.'
 icon: 'compress'
 ---
 
-Long-running agents accumulate transcripts that eventually exceed the model's context window. Swarms ships a `ContextCompressor` that summarizes the active memory near the limit and archives the raw transcript — the agent keeps running without manual pruning.
+Long-running agents accumulate transcripts that eventually exceed the model's context window. Swarms ships a `ContextCompressor` that summarizes the active memory near the limit. Enable `persistent_memory=True` as well if you want the raw transcript archived on disk before compaction.
 
 ## When to use it
 
@@ -24,7 +24,7 @@ The default `threshold` is `0.9` — compression fires at ~90% of the context wi
 
 ## Default behavior
 
-Compression is enabled by default. Just construct the agent normally:
+Compression is enabled by default, but persistent memory is not. This example opts in to both so the archive and restart behavior described below apply:
 
 ```python
 from swarms import Agent
@@ -34,12 +34,13 @@ agent = Agent(
     model_name="claude-sonnet-4-6",
     max_loops=5,
     context_compression=True,  # default
+    persistent_memory=True,   # opt in to MEMORY.md and its archives
 )
 
 agent.run("Research low-latency cloud data warehouses, then dive deep on GCP.")
 ```
 
-When the prompt approaches the limit, Swarms:
+When the prompt approaches the limit, this persistent agent:
 
 1. Summarizes the current transcript with an LLM call.
 2. Copies `MEMORY.md` to `archive/history_<timestamp>.md`.
@@ -47,6 +48,10 @@ When the prompt approaches the limit, Swarms:
 4. Rebuilds `conversation_history` (system prompt + rules + summary).
 
 The agent keeps running with a small active context; the full pre-compaction transcript stays in `archive/`.
+
+<Note>
+  With the default `persistent_memory=False`, compression still replaces the in-memory transcript with a summary. It does not create `MEMORY.md` or an archive, and that summary is not reloaded on restart. The two flags control separate behavior: compression limits active context; persistence retains it across processes.
+</Note>
 
 ## Tune the compressor
 
@@ -61,6 +66,7 @@ agent = Agent(
     model_name="claude-sonnet-4-6",
     max_loops=5,
     context_compression=True,
+    persistent_memory=True,
 )
 
 agent._context_compressor = ContextCompressor(
@@ -86,7 +92,7 @@ agent.short_memory.compact(
 )
 ```
 
-Manual compaction follows the same archive → wipe → re-seed flow as automatic compression.
+Manual compaction follows the same archive → wipe → re-seed flow when persistent memory is enabled. Without persistence, it only rebuilds the in-memory history.
 
 ## Disable compression
 
@@ -100,6 +106,7 @@ agent = Agent(
     model_name="claude-sonnet-4-6",
     max_loops="auto",
     context_compression=False,
+    persistent_memory=True,  # retain the uncompressed transcript on disk
 )
 ```
 
@@ -107,7 +114,7 @@ Use this for short tasks, or when downstream tooling parses the unmodified trans
 
 ## What ends up on disk
 
-After compaction:
+With `persistent_memory=True`, after compaction:
 
 ```text
 $WORKSPACE_DIR/agents/ResearchAgent/

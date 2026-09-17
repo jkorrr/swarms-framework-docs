@@ -217,12 +217,12 @@ When compression fires:
 
 1. The current transcript is summarized with an LLM call.
 2. `Conversation.compact(summary=...)` is called.
-3. The current `MEMORY.md` is copied to `archive/history_<timestamp>.md`.
-4. The active `MEMORY.md` is deleted and recreated with a fresh header.
+3. If `persistent_memory=True`, the current `MEMORY.md` is copied to `archive/history_<timestamp>.md`.
+4. If persistence is enabled, the active `MEMORY.md` is deleted and recreated with a fresh header.
 5. `conversation_history` is rebuilt with the system prompt, rules, and custom rules.
-6. The summary is appended as one `System` message to both memory and `MEMORY.md`.
+6. The summary is appended as one `System` message to memory and, when enabled, `MEMORY.md`.
 
-After compaction, active memory is small again:
+After compaction, active memory is small again. The disk files below exist only when persistent memory is enabled:
 
 ```text
 conversation_history:
@@ -242,11 +242,11 @@ archive/history_<previous-timestamp>.md:
   Full pre-compaction transcript
 ```
 
-On the next process restart, Swarms loads the compact summary from `MEMORY.md` instead of the raw pre-compaction transcript. The archive keeps the full transcript available without filling the active context window.
+With `persistent_memory=True`, the next process using the same workspace and agent name loads the compact summary from `MEMORY.md` instead of the raw transcript. Without persistence, compression only updates the current process's history; it creates no archive and cannot resume the summary on restart.
 
 ## Configure compression
 
-Compression is enabled by default:
+Compression is enabled by default. Opt in to persistence separately to retain the transcript and summary on disk:
 
 ```python
 from swarms import Agent
@@ -257,6 +257,7 @@ agent = Agent(
     max_loops=5,
     context_compression=True,
     context_length=32000,
+    persistent_memory=True,
 )
 ```
 
@@ -270,6 +271,7 @@ agent = Agent(
     model_name="claude-sonnet-4-6",
     max_loops="auto",
     context_compression=False,
+    persistent_memory=True,  # retain the uncompressed MEMORY.md
 )
 ```
 
@@ -285,6 +287,7 @@ agent = Agent(
     max_loops=5,
     context_compression=True,
     context_length=32000,
+    persistent_memory=True,
 )
 
 agent._context_compressor = ContextCompressor(
