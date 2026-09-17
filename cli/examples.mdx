@@ -22,6 +22,10 @@ swarms setup-check
 
 ## Single-agent examples
 
+These `agent` examples supply `--name`, `--description`, and `--system-prompt`.
+Include all three when copying a command; omitting
+`--description` stops the command before an agent is created.
+
 ### Research agent
 
 ```bash
@@ -40,6 +44,7 @@ swarms agent \
 ```bash
 swarms agent \
   --name "Code Reviewer" \
+  --description "Reviews code for security and maintainability" \
   --system-prompt "You are a senior engineer focused on security and best practices." \
   --task "Review this code for vulnerabilities: def process(data): return eval(data)" \
   --model-name "claude-sonnet-4-6" \
@@ -53,6 +58,7 @@ swarms agent \
 ```bash
 swarms agent \
   --name "MCP Agent" \
+  --description "Answers research questions using MCP tools" \
   --system-prompt "Use MCP tools when they help answer the task." \
   --task "Find recent news about climate policy and summarize findings" \
   --model-name "claude-sonnet-4-6" \
