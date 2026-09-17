@@ -56,26 +56,32 @@ print(out)
 
 `batched_grid_agent_execution` runs N agents on N tasks concurrently. Use it when you need to scrape several sites at once — for example, a competitive landscape report.
 
+Create a separate agent for each site. Passing `[agent, agent]` repeats a reference to one object; it does not clone the agent. Both calls would append their tasks and responses to the same conversation history. Use a factory to share configuration while keeping each agent's state separate.
+
 ```python
 from swarms import Agent
 from swarms_tools import scrape_and_format_sync
 from swarms.structs.multi_agent_exec import batched_grid_agent_execution
 
-agent = Agent(
-    agent_name="Web Scraper Agent",
-    model_name="gpt-5.4",
-    tools=[scrape_and_format_sync],
-    dynamic_context_window=True,
-    dynamic_temperature_enabled=True,
-    max_loops=1,
-    system_prompt=(
-        "You are a web scraper agent. You are given a URL and you need to scrape "
-        "the website and return the data in a structured format. The format type should be full"
-    ),
-)
+def create_scraper(agent_name: str) -> Agent:
+    return Agent(
+        agent_name=agent_name,
+        model_name="gpt-5.4",
+        tools=[scrape_and_format_sync],
+        dynamic_context_window=True,
+        dynamic_temperature_enabled=True,
+        max_loops=1,
+        system_prompt=(
+            "You are a web scraper agent. You are given a URL and you need to scrape "
+            "the website and return the data in a structured format. The format type should be full"
+        ),
+    )
 
 out = batched_grid_agent_execution(
-    agents=[agent, agent],
+    agents=[
+        create_scraper("Swarms Web Scraper"),
+        create_scraper("LangChain Web Scraper"),
+    ],
     tasks=[
         "Scrape swarms.ai website and provide a full report of the company's mission, "
         "products, and team. The format type should be full.",
@@ -87,7 +93,7 @@ out = batched_grid_agent_execution(
 print(out)
 ```
 
-You can pass distinct agents per task as well — useful when each site needs a different system prompt or model.
+Give each agent a unique name, too, so their memory directories stay separate if you enable persistent memory. You can customize the factory when a site needs a different system prompt or model.
 
 <Note>
   Source: [examples/guides/web_scraper_agents/web_scraper_agent.py](https://github.com/kyegomez/swarms/blob/master/examples/guides/web_scraper_agents/web_scraper_agent.py)
