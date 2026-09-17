@@ -174,7 +174,7 @@ analysis_workflow = ConcurrentWorkflow(
     name="Parallel-Analysis",
     agents=[statistical_analyst, trend_analyst, anomaly_detector],
     max_loops=1,
-    output_type="final",  # return a string so it can feed the next stage's task=
+    output_type="str-all-except-first",  # include every analyst's findings
 )
 
 # Third: Sequential visualization and reporting
@@ -234,6 +234,12 @@ Three analysts work in parallel:
 - **Trend Analyst** identifies patterns and forecasts
 - **Anomaly Detector** finds outliers and unusual patterns
 
+`output_type="str-all-except-first"` passes all analyst responses to the reporting
+stage as one string. It excludes the initial input
+message. Using `"final"` here would keep only the last completed analyst's
+response, losing the other findings. The sequential preparation and reporting
+stages still use `"final"` because each needs its last agent's output.
+
 ### Stage 3: Reporting (Sequential)
 1. **Visualization Expert** designs charts and graphs
 2. **Report Synthesizer** combines all insights into final report
@@ -260,6 +266,7 @@ marketing_analyst = Agent(
 # Add to parallel analysis
 analysis_workflow = ConcurrentWorkflow(
     agents=[statistical_analyst, trend_analyst, anomaly_detector, marketing_analyst],
+    output_type="str-all-except-first",
 )
 ```
 
