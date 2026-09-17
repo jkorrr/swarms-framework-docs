@@ -310,26 +310,25 @@ for i, result in enumerate(results):
 ### batch_agent_execution()
 
 <Warning>
-**Currently broken — every call raises.** `batch_agent_execution` builds its future map from `zip(agents, tasks, imgs)` while `imgs` defaults to `None`, so it fails with `TypeError: zip argument #3 must support iteration` before any agent runs. It also stores 3-tuples but unpacks only two values when collecting results.
+The examples below describe the fixed [source implementation](https://github.com/kyegomez/swarms/blob/master/swarms/structs/batch_agent_execution.py). The published `swarms==15.0.3` package still raises `BatchAgentExecutionError`: omitting `imgs` fails while building the batch, and supplying images fails when unpacking completed futures.
 
-Use [`run_agents_with_different_tasks`](#run-agents-with-different-tasks) for the same 1:1 agent-to-task pairing until this is fixed.
+If you use that release, use [`run_agents_with_different_tasks`](#run-agents-with-different-tasks) for 1:1 agent-to-task pairing. Updating to `15.0.3` alone does not include the fix.
 </Warning>
 
-
-Runs a list of agents on a parallel list of tasks. Each `agents[i]` runs `tasks[i]` — unlike `batched_grid_agent_execution` (which runs every agent on every task), pairings are 1:1.
+Runs a list of agents or callables on a parallel list of tasks. Each `agents[i]` runs `tasks[i]`, with `imgs[i]` when provided. Omitting `imgs` supplies `None` to each call. Like `batched_grid_agent_execution`, this is a 1:1 pairing; neither helper runs every agent on every task.
 
 ```python
 def batch_agent_execution(
     agents: List[Union[Agent, Callable]],
-    tasks: List[str] = None,
-    imgs: List[str] = None,
+    tasks: Optional[List[str]] = None,
+    imgs: Optional[List[str]] = None,
     max_workers: int = max(1, int(os.cpu_count() * 0.9)),
 ) -> List[Any]
 ```
 
 **Parameters:**
-- `agents` (List[Agent | Callable]): Agents to run.
-- `tasks` (List[str]): One task per agent. Must have the same length as `agents`.
+- `agents` (List[Agent | Callable]): Agents or callables to run. The helper calls `agent.run(task, img)` when `run` exists, otherwise `agent(task, img)`.
+- `tasks` (List[str]): Supply one task per agent, with the same length as `agents`. The default `None` is not a valid task list.
 - `imgs` (List[str]): One optional image input per agent. Must be the same length as `agents` when provided.
 - `max_workers` (int): Thread pool size. Defaults to ~90% of CPU cores.
 
@@ -353,12 +352,40 @@ tasks = [
     "Classify this review as positive, negative, or neutral: 'Loved it!'",
 ]
 
-results = batch_agent_execution(agents=agents, tasks=tasks, imgs=[None, None, None])
+results = batch_agent_execution(agents=agents, tasks=tasks)
 for agent, result in zip(agents, results):
     print(f"{agent.agent_name}: {result}")
 ```
 
-Pair this with `run_agents_concurrently` (every agent runs the same task) and `batched_grid_agent_execution` (every agent runs every task) to cover the three common shapes of "run a bunch of agents".
+You can check the pairing without making model requests by passing a callable that returns its received arguments. Accept both positional arguments, even when you omit `imgs`:
+
+```python
+from typing import Optional
+from swarms.structs.batch_agent_execution import batch_agent_execution
+
+
+def echo_inputs(task: str, img: Optional[str] = None) -> tuple[str, Optional[str]]:
+    return task, img
+
+
+results = batch_agent_execution(
+    agents=[echo_inputs, echo_inputs],
+    tasks=["Summarize", "Translate"],
+    max_workers=2,
+)
+assert results == [("Summarize", None), ("Translate", None)]
+print(results)
+```
+
+Choose the helper by the arguments you need to pass:
+
+| Helper | Pairing | Image input | Failed agent result |
+|---|---|---|---|
+| `run_agents_concurrently` | Every agent receives the same task | One shared `img` | Exception in that agent's slot |
+| `batched_grid_agent_execution` | Each agent receives its corresponding task | No image parameter | Exception in that agent's slot |
+| `batch_agent_execution` | Each agent or callable receives its corresponding task | Optional image per agent | `None` in that agent's slot |
+
+All three return results in input order, even when tasks finish in a different order. Batch setup failures, such as mismatched list lengths, raise instead of becoming per-agent results.
 
 ### run_agents_with_different_tasks()
 
