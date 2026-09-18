@@ -207,6 +207,7 @@ def build_workflow(document: dict, *, workspace: Path, models: dict | None = Non
     workspace.mkdir(parents=True, exist_ok=True)
     os.environ["WORKSPACE_DIR"] = str(workspace.resolve())
     os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    os.environ["SWARMS_TELEMETRY_ON"] = "false"
     from swarms import Agent, GraphWorkflow
 
     graph = GraphWorkflow(name="DocumentBrief", max_loops=1, max_parallel_nodes=2)
