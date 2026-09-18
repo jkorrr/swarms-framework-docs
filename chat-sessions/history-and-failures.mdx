@@ -1,0 +1,130 @@
+---
+title: "Bound chat history and handle failed turns"
+description: "Understand which saved pairs reach the model, keep failed attempts out of transcripts, and test local chat session restarts and malformed state."
+---
+
+[Part 1](/chat-sessions/create-and-continue) created named chat sessions and continued them across command invocations. This part examines the boundaries that keep the session file predictable: recent history selection, complete-turn commits, strict loading, and explicit limits.
+
+## Separate retained history from model context
+
+The companion retains successful pairs on disk until a session reaches its configured application limits. For a model request, it selects only the newest `history_turns` pairs. Older pairs remain visible through `show` but are omitted from that request.
+
+For a session created with `--history-turns 2`, context grows as follows:
+
+| New turn | Saved pairs before the call | Previous pairs sent | Older pairs omitted |
+| --- | --- | --- | --- |
+| 1 | None | None | 0 |
+| 2 | 1 | 1 | 0 |
+| 3 | 1, 2 | 1, 2 | 0 |
+| 4 | 1, 2, 3 | 2, 3 | 1 |
+| 5 | 1, 2, 3, 4 | 3, 4 | 2 |
+
+The system prompt and the new user message also enter the model request. The application selects complete pairs, so it never starts the supplied history with an assistant answer whose corresponding user message was removed.
+
+Continue the `travel` session from Part 1:
+
+```bash
+python examples/chat-sessions/sessions.py --store chat-demo send travel "My visit will last five days." --response "I have noted five days."
+python examples/chat-sessions/sessions.py --store chat-demo send travel "I enjoy gardens." --response "I have noted your interest in gardens."
+```
+
+On turn 4, the report shows `history_turns_sent: 2` and `older_turns_omitted: 1`. The first pair about Kyoto remains in the file but is absent from this request's history. There is no automatic summary or retrieval of omitted messages. If an old detail matters to the next answer, include it in your new message.
+
+These are pair and character limits, not token accounting. They do not guarantee that a provider accepts the resulting context or that its answer fits the application's response limit.
+
+## Understand the limits
+
+The constants and schema checks in `sessions.py` enforce:
+
+| Boundary | Limit | Behavior when exceeded |
+| --- | --- | --- |
+| Session name | 1–40 characters; lowercase letter first, then lowercase letters, digits, `_`, or `-` | Reject before opening a session path; also reject Windows reserved filenames |
+| Recent history | 1–10 complete pairs; default 4 | Reject invalid configuration before constructing an Agent |
+| User message or assistant response | Nonblank string, at most 4,000 characters | Reject before generation for input, or before saving for output |
+| Retained transcript | At most 40 complete pairs | Reject a new send once 40 pairs are saved |
+| Session file | At most 512,000 UTF-8 bytes | Reject an oversized existing file before parsing; reject an oversized candidate before replacement |
+| Model name | Nonblank string, at most 200 characters | Reject invalid configuration |
+| System prompt | Nonblank string, at most 4,000 characters | Reject invalid configuration |
+
+The byte limit can be reached before the turn limit, particularly with multibyte text. Start another named session when a limit is reached; the companion does not silently discard retained pairs or compress them. The files contain plaintext conversation content, so choose a store location appropriate for that content.
+
+## Commit only a completed turn
+
+The write path follows this order:
+
+1. Validate the new user message, load the current file, and validate its complete schema.
+2. Check the retained-turn limit and ensure the backend matches the stored mode.
+3. Construct a fresh Agent and run it with the selected history.
+4. Require a new model response in the Agent's `Conversation`, then validate the returned answer.
+5. Append the complete pair to a copy of the state; validate and encode that candidate.
+6. Write the candidate to a temporary file in the same directory, flush it, and call `fsync`.
+7. Check that the original file still matches the bytes loaded before generation, then replace it with `os.replace`.
+
+The extra response check matters in Swarms 15.0.3: an Agent can catch a backend exception internally. A returned value by itself is not enough to establish that this invocation produced a model reply. The companion checks for a new row under this fresh Agent's name before accepting the answer. The history supplied by the application uses standard `user` and `assistant` roles, so it cannot satisfy that check accidentally.
+
+The application writes neither an attempted user message nor a failed model result into the saved transcript. The in-memory `Conversation` can contain attempted work; that Agent is discarded when the command ends.
+
+## Exercise a failed turn
+
+An empty scripted answer reaches the actual Agent but fails the application's response validation:
+
+```bash
+python examples/chat-sessions/sessions.py --store chat-demo send travel "This turn must not be saved." --response ""
+python examples/chat-sessions/sessions.py --store chat-demo show travel
+```
+
+The send exits with code 2 and prints an error to stderr. The saved turn count and transcript remain unchanged. The next successful send uses the previous successful pairs and its new message; it has no failed-attempt pair to restore.
+
+An omitted `--response` for a scripted session also exits with code 2, before constructing an Agent. Successful `create`, `send`, and `show` commands exit with code 0. Missing files, invalid state, and filesystem errors produce exit code 2 with an explanation.
+
+Provider errors and save failures require different decisions. A provider request may have completed even if the application did not save its response. Inspect the error and `show` the session before deciding whether to send again. Repeating a provider-backed send can incur another charge; this application has no provider request deduplication.
+
+## Validate state before restoration
+
+`load_session` reads at most the file limit plus one byte. It then requires UTF-8 JSON with no duplicate object keys or nonstandard numeric constants. The schema requires version 1, the requested session name, the exact configuration fields, and complete two-field turn objects.
+
+These examples fail validation:
+
+| Changed state | Why loading stops |
+| --- | --- |
+| `"schema_version": 2` | No migration for another version is implemented |
+| `travel.json` contains `"session": "cooking"` | The file does not belong to the requested session name |
+| A turn contains only `"user"` | Incomplete pairs are outside the saved transcript contract |
+| A turn contains `"role": "system"` and `"content"` | Turns accept only `user` and `assistant` fields |
+| `"history_turns": true` | Booleans are not accepted as integer configuration values |
+| A configuration object has an unexpected field | Unknown fields are rejected rather than interpreted |
+
+Malformed state is rejected before any model call. Preserve a copy before repairing a damaged file. Restore a known-good backup or create a new named session when the intended contents are uncertain. The loader does not guess missing responses, silently reset the transcript, or migrate unknown versions.
+
+The validation establishes a format, not trust in whoever wrote the file. A local user can edit a valid system prompt, model name, or transcript. Keep filesystem access under the same trust boundary as the application.
+
+## Understand interruption and writer limits
+
+After a successful send, a new process loads the saved pair and can continue the session. If generation or candidate validation fails before replacement, the original saved file remains in place. If `os.replace` fails, the companion reports the error and removes the temporary file where possible.
+
+A process interruption during generation loses that attempted turn. An interruption while preparing a replacement can leave a temporary file beside the session; the loader opens only the named JSON file and does not treat temporary files as sessions. Initial `create` uses exclusive creation, so an interruption during its first write can leave an incomplete new file that the loader rejects.
+
+The flush-and-replace sequence reduces the chance of exposing a partially written update. It is not a promise of power-loss durability on every filesystem. Keep backups if the conversation must be recoverable after storage failure.
+
+The original-bytes check catches some edits made during a model call, but it is not a lock: another writer can change the file after the check. Run only one writer for each session. A multi-user service needs a transactional store or an appropriate concurrency-control design, plus authentication, before adopting this workflow.
+
+## Run the integration tests
+
+From the repository root:
+
+```bash
+python -m pytest -q examples/chat-sessions/test_sessions.py
+```
+
+The suite supplies deterministic custom backends to the real Swarms Agent. It verifies:
+
+- Two named sessions keep their previous messages separate, and the current user message reaches the backend exactly once.
+- The backend receives the newest complete pairs in order while the file retains older successful pairs.
+- A backend exception or an invalid answer leaves the saved file byte-for-byte unchanged.
+- Invalid state, excessive input, mode mismatches, and a full transcript are rejected before generation.
+- A replacement failure and an oversized candidate preserve the prior file.
+- Separate CLI processes restore a prior turn, pass its history to the backend, and print Unicode under a Windows-style redirected encoding.
+
+The restart test does more than inspect an answer string: its backend asserts that the previous user and assistant messages are present in the next call. These checks establish the application's context and storage behavior. They do not evaluate a provider's recall, reasoning, or factual accuracy.
+
+Use [Conversation](/api/conversation) to explore the SDK's message operations, and [persistent agent memory](/agents/agent-memory) when native automatic history storage fits your application's contract.

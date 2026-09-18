@@ -275,6 +275,13 @@
             ]
           },
           {
+            "group": "Local chat sessions",
+            "pages": [
+              "chat-sessions/create-and-continue",
+              "chat-sessions/history-and-failures"
+            ]
+          },
+          {
             "group": "Multi-Agent Examples",
             "pages": [
               "examples/overviews/multi-agent-overview",
