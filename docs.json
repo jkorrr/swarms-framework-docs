@@ -299,6 +299,13 @@
             ]
           },
           {
+            "group": "Message localization",
+            "pages": [
+              "localization/generate-catalogs",
+              "localization/render-and-fallback"
+            ]
+          },
+          {
             "group": "Scheduled Agents",
             "pages": [
               "examples/cron-job/quickstart",

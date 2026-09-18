@@ -1,0 +1,20 @@
+{
+  "es": {
+    "locale": "es",
+    "messages": {
+      "welcome": "¡Hola, {user}!",
+      "cart_count": "Artículos en el carrito: {count}.",
+      "order_ready": "Para {user}: el pedido {order_id} está listo.",
+      "literal_braces": "Usa {{ y }} como llaves literales."
+    }
+  },
+  "fr": {
+    "locale": "fr",
+    "messages": {
+      "welcome": "Bonjour, {user} !",
+      "cart_count": "Articles dans le panier : {count}.",
+      "order_ready": "La commande {order_id} est prête pour {user}.",
+      "literal_braces": "Utilisez {{ et }} pour les accolades littérales."
+    }
+  }
+}

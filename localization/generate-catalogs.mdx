@@ -1,0 +1,115 @@
+---
+title: "Generate message catalogs"
+description: "Use ConcurrentWorkflow to produce locale catalogs while preserving application keys and named placeholders"
+icon: "language"
+---
+
+Translating a UI string is only part of localizing an application. If an agent changes `welcome` to a translated key, the application cannot find it. If it turns `{user}` into `{utilisateur}`, the application cannot supply the expected value. A response can sound fluent and still break rendering.
+
+This two-part guide builds a small message-catalog workflow. Real Swarms Agents translate the same source catalog concurrently, one Agent per locale. Your application checks the returned keys and placeholder counts, then loads the accepted catalogs through a renderer with explicit source-language fallback.
+
+The example supports plain-text messages with simple named string placeholders. **It does not implement ICU MessageFormat, plural rules, grammatical gender selection, or locale-specific date and number formatting.** Use an internationalization library designed for those features when your application needs them.
+
+## Install and run the companion
+
+Clone this documentation repository and work from its root. The [companion directory](https://github.com/The-Swarm-Corporation/swarms-framework-docs/tree/main/examples/localization) contains `catalogs.py`, the source catalog, two synthetic response fixtures, and tests.
+
+```bash
+python -m venv .venv
+```
+
+Activate the environment with `source .venv/bin/activate` on macOS/Linux, or `.venv\Scripts\Activate.ps1` in PowerShell. Then install:
+
+```bash
+python -m pip install -r examples/localization/requirements.txt
+```
+
+The companion targets Python 3.10 or newer and pins `swarms==15.0.3`. The integration suite was run on Python 3.12.10. Dependency installation requires network access. The fixture command below uses no model service or API key:
+
+```bash
+python examples/localization/catalogs.py generate --source examples/localization/source.json --locales es fr --fixtures examples/localization/fixtures.json --output catalog-bundle.json --workspace localization-workspace
+```
+
+You should see `accepted` for both locales. The generated bundle identifies its mode as `scripted`: fixed response text passed through real `Agent.run` calls and a real `ConcurrentWorkflow`. These fixtures verify workflow and format contracts. They do not establish translation quality or model behavior.
+
+The command opts out of native Swarms telemetry with `SWARMS_TELEMETRY_ON=false` and uses LiteLLM's packaged cost map with `LITELLM_LOCAL_MODEL_COST_MAP=True` before importing Swarms. It places the framework workspace under `--workspace` and disables Agent/workflow autosave. The released Conversation implementation may still create `~/.swarms`, so use a writable home directory and workspace. These settings are not general network isolation or process-wide logging controls. Start a fresh process; an already-active native telemetry instance is rejected rather than changed at runtime.
+
+## Define the source catalog
+
+The checked-in `source.json` uses this schema:
+
+```json
+{
+  "schema_version": 1,
+  "source_locale": "en",
+  "messages": {
+    "welcome": "Welcome, {user}!",
+    "cart_count": "Items in cart: {count}.",
+    "order_ready": "Order {order_id} is ready for {user}.",
+    "literal_braces": "Use {{ and }} for literal braces."
+  }
+}
+```
+
+Keys identify application messages and remain unchanged across locales. Templates contain plain text, fields such as `{user}`, and doubled braces for literal braces. `cart_count` uses a label followed by a value; it does not choose singular or plural forms.
+
+The source contract accepts 1–100 messages. Keys begin with a lowercase ASCII letter and contain up to 64 lowercase letters, digits, dots, underscores, or hyphens. Templates must be nonblank strings no longer than 1,000 characters. Locale identifiers follow the deliberately small `en` / `pt-BR` naming convention: two lowercase letters, optionally followed by a hyphen and two uppercase letters. This is not a complete language-tag parser.
+
+Each target Agent must return exactly this shape:
+
+```json
+{
+  "locale": "es",
+  "messages": {
+    "welcome": "¡Hola, {user}!",
+    "cart_count": "Artículos en el carrito: {count}.",
+    "order_ready": "Para {user}: el pedido {order_id} está listo.",
+    "literal_braces": "Usa {{ y }} como llaves literales."
+  }
+}
+```
+
+Reordering `{user}` and `{order_id}` is valid. Removing, renaming, adding, or changing the repetition count of a placeholder is invalid. Each locale must contain the complete source key set, with no additional keys. One invalid message excludes that entire locale from the runtime catalog collection; another valid locale remains available.
+
+## Connect the real concurrent workflow
+
+`make_agent(locale, llm)` constructs a fresh Agent named `catalog-<locale>`. Its system prompt assigns that locale and the catalog contract. It uses one loop, one retry attempt, and `output_type="final"`.
+
+`generate_catalogs` supplies those Agents to the actual workflow:
+
+```python
+import json
+from swarms import ConcurrentWorkflow
+
+workflow = ConcurrentWorkflow(
+    name="message-localization",
+    agents=agents,
+    output_type="dict-all-except-first",
+    auto_save=False,
+    autosave=False,
+    show_dashboard=False,
+    on_error="store",
+    max_workers=len(agents),
+)
+rows = workflow.run(json.dumps(source, ensure_ascii=False))
+```
+
+This is the companion's orchestration section; `generate_catalogs` receives `source` and constructs `agents` before this call. In Swarms 15.0.3, the selected output format returns a list of role/content rows after the initial task. Results arrive in completion order. The application therefore matches `catalog-es` to `es` and `catalog-fr` to `fr`; it never pairs the first returned row with the first requested locale.
+
+The response's own `locale` field must also match its assigned Agent. A French Agent returning an otherwise valid Spanish catalog is rejected. Both independent checks matter: result position is unstable, and generated locale labels are model output.
+
+## Interpret generation results
+
+| Status | Meaning | Runtime behavior |
+| --- | --- | --- |
+| `accepted` | Exact keys, supported template syntax, and placeholder counts passed | Include the whole locale catalog |
+| `invalid_catalog` | An assistant reply failed the catalog contract | Exclude that locale; retain other accepted locales |
+| `execution_error` | No single successful assistant result was available | Exclude that locale; retain other accepted locales |
+
+`accepted` is a structural result, not a language-quality score. Incorrect wording in valid JSON can pass. The application does not evaluate fluency, factual meaning, regional usage, or whether the text is actually in the requested language.
+
+An Agent may handle an exhausted backend exception internally and return earlier conversation content. The companion checks for a newly added assistant message as well as the workflow result row, so a returned task is not accepted as a translation. A propagated Agent exception appears under the workflow's failure role and is also treated as an execution error.
+
+Invalid source/configuration, Agent construction failures, and workflow-wide exceptions abort generation. They are not reported as individual bad locales. A completed generation exits `0` when every locale passes, or `1` when it saves a bundle containing only the successful locales. Argument, source-schema, and file errors return `2`. Choose a new output filename for each run; the command refuses to overwrite an existing file.
+
+Continue with [rendering and fallback](/localization/render-and-fallback) to use the bundle in an application and inspect the tests before changing the model backend.

@@ -1,0 +1,118 @@
+---
+title: "Render messages with fallback"
+description: "Load validated locale catalogs, substitute named values, and make source-language fallback visible"
+icon: "message"
+---
+
+Complete [catalog generation](/localization/generate-catalogs) first. You should have `catalog-bundle.json` at the repository root. This page uses that bundle without running another Agent, then shows how to adapt and test the generation step.
+
+## Render a translated message
+
+From the repository root:
+
+```bash
+python examples/localization/catalogs.py render catalog-bundle.json --locale es --key welcome --value "user=Zoë"
+```
+
+The command emits UTF-8 JSON:
+
+```json
+{"text": "¡Hola, Zoë!", "requested_locale": "es", "used_locale": "es", "fallback": false}
+```
+
+Provide one `--value name=text` option for each distinct placeholder name. Values are strings; the renderer does not infer numbers or dates from them. For two placeholders:
+
+```bash
+python examples/localization/catalogs.py render catalog-bundle.json --locale es --key order_ready --value "user=Zoë" --value "order_id=A-7"
+```
+
+The result is `Para Zoë: el pedido A-7 está listo.` The Spanish template changes the order of fields while keeping the same names. Literal-brace messages need no values:
+
+```bash
+python examples/localization/catalogs.py render catalog-bundle.json --locale fr --key literal_braces
+```
+
+The rendered text is `Utilisez { et } pour les accolades littérales.` Doubled braces in the catalog become single braces in the message. Braces inside a supplied value remain literal text; substitution is not recursive.
+
+## Make fallback explicit
+
+Request a locale that is absent from the bundle:
+
+```bash
+python examples/localization/catalogs.py render catalog-bundle.json --locale de --key welcome --value "user=Zoë"
+```
+
+```json
+{"text": "Welcome, Zoë!", "requested_locale": "de", "used_locale": "en", "fallback": true}
+```
+
+The policy is **exact locale match, otherwise source locale**. An unavailable `fr-CA` does not select `fr`, even when French exists. The example does not negotiate browser preferences or implement a regional fallback hierarchy. If the requested locale is already the source locale, `fallback` is `false`.
+
+A rejected locale is absent from `catalogs`, so it follows the same source fallback. There is no per-message mixing within a partially accepted locale: the generator requires every source key. Unknown message keys, missing values, extra values, and non-string values are application errors. They do not silently become empty strings or trigger a different fallback.
+
+## Load the bundle in your application
+
+Save this as `examples/localization/render_ui.py`, and run it from the repository root with `python examples/localization/render_ui.py`:
+
+```python
+from pathlib import Path
+from catalogs import CatalogStore, parse_json
+
+bundle = parse_json(Path("catalog-bundle.json").read_text(encoding="utf-8"))
+messages = CatalogStore(bundle)
+
+result = messages.render("es", "welcome", {"user": "Zoë"})
+print(result["text"])
+print("language used:", result["used_locale"])
+```
+
+`CatalogStore` validates the embedded source and every target catalog when you load it, then copies them into the store. An invalid catalog in a modified file raises an error; it is not silently trusted or converted to fallback. The bundle's historical `results`, `mode`, and `framework_version` fields are generation diagnostics. They do not control which templates the renderer accepts; the actual source/catalog content is checked again.
+
+Templates are parsed with Python's `string.Formatter`. This example accepts named fields such as `{user}` and rejects positional fields, attribute/index access, conversions, and nonempty format specifications. It compares a counter of names, so a source that uses `{user}` twice requires two uses in its translation. Rendering then supplies exactly those distinct names through `str.format_map`. See Python's [format syntax reference](https://docs.python.org/3/library/string.html#format-string-syntax) for the underlying brace rules.
+
+The result is plain text. Apply the normal escaping and presentation rules of the UI where you display it; this renderer is not an HTML template engine. It also does not choose plural forms or localize a supplied number/date string. Those concerns need a separate internationalization design.
+
+The bundle embeds the source text used during generation. Loading it does not compare against a newer source file in your repository. Regenerate and review catalogs when source messages change, including wording changes that leave the placeholder set unchanged.
+
+## Adapt the generation backend
+
+`generate_catalogs(source, locales, agent_factory=..., mode=...)` accepts 1–8 distinct target locales. Each factory call receives a locale name and must return a fresh Agent with the corresponding `catalog-<locale>` role. `make_agent` supplies that setup for you.
+
+For another local backend, create a script alongside `catalogs.py`:
+
+```python
+from pathlib import Path
+import json
+from catalogs import ScriptedModel, generate_catalogs, make_agent, parse_json, prepare_runtime
+
+prepare_runtime(Path("custom-localization-workspace"))
+source = parse_json(Path("examples/localization/source.json").read_text(encoding="utf-8"))
+fixtures = parse_json(Path("examples/localization/fixtures.json").read_text(encoding="utf-8"))
+
+def agent_factory(locale):
+    response = json.dumps(fixtures[locale], ensure_ascii=False)
+    return make_agent(locale, ScriptedModel(response))
+
+bundle = generate_catalogs(source, ["es", "fr"], agent_factory=agent_factory, mode="scripted")
+print(bundle["results"])
+```
+
+Run that script from the repository root. Replace `ScriptedModel` with your supported custom `llm` implementation and use `mode="custom"` to identify it. Keep a separate Agent per locale; a shared conversation could mix instructions and replies between languages.
+
+The CLI also supports an explicit provider opt-in by replacing `--fixtures` with `--model "your-provider/model"`. You configure that provider's credentials and accept its requests and costs. Provider inference was not run for this guide. Model prompting asks for the catalog contract; the deterministic checks enforce the part that is machine-verifiable. Language review remains separate.
+
+## Test contracts and runtime behavior
+
+From the repository root:
+
+```bash
+python -m pytest examples/localization -q
+```
+
+The suite runs the full released `ConcurrentWorkflow` and real Agents with scripted backends. A synchronized test forces the French result to be recorded before Spanish and checks that both catalogs still map to the right locale. Another test makes one backend fail and confirms that the other locale remains usable.
+
+The tests also cover missing/extra keys, mislabeled locales, missing and repeated placeholders, malformed braces, unsupported format syntax, malformed/duplicate-key JSON, Unicode values, literal braces, runtime parameter mistakes, exact-locale fallback, and revalidation on load. Separate-process CLI tests cover generation, rendering, partial-success exit status, overwrite refusal, and UTF-8 output with Windows redirected encoding.
+
+In-process tests assert that no socket connection is attempted; the ordinary example is not a network sandbox. These tests establish orchestration, message-format, and fallback behavior. They cannot establish that a real model translates correctly.
+
+For the underlying APIs, see [ConcurrentWorkflow](/api/concurrent-workflow) and [Agent](/api/agent). The shorter [concurrent workflow example](/examples/concurrent-workflow-example) shows free-text translation when your output does not need an application message catalog.
