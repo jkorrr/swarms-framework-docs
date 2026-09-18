@@ -1,0 +1,113 @@
+---
+title: "Build a team from reviewed YAML"
+description: "Validate an authored team configuration before constructing agents, then run its exact snapshot through the released YAML loader"
+icon: "file-code"
+---
+
+Keep your team's prompts, models, and execution order in a file you can review. Then check that file before constructing agents or running a task. This guide builds a small editorial team: one agent creates an outline and another writes a community announcement from it.
+
+The companion uses the real `AgentLoader`, its underlying `create_agents_from_yaml` function, and `SequentialWorkflow` from Swarms `15.0.3`. It adds an application-specific validation step and saves the configuration used for each run. [Part two](/configured-teams/revise-and-reproduce) uses that snapshot to diagnose changes and reproduce the setup.
+
+This is a manually authored configuration workflow. It does not ask a model to design a roster or measure whether one prompt is better than another.
+
+## Install and validate first
+
+Clone the [documentation repository](https://github.com/The-Swarm-Corporation/swarms-framework-docs), create and activate a Python 3.10-or-later virtual environment, and work from the repository root:
+
+```bash
+python -m pip install -r examples/configured_team/requirements.txt
+python examples/configured_team/run_team.py validate examples/configured_team/team.yaml
+```
+
+The command prints the configuration digest and the ordered agent names. It imports the YAML parser and validation models but does not import Swarms, create agents, or perform inference. Run it while reviewing a configuration change before spending time on a complete run.
+
+Use a writable working directory and home directory for execution. Swarms may initialize its standard conversation directory under your home even when persistent memory is disabled. Before framework imports, the companion sets `WORKSPACE_DIR`, opts out of Swarms telemetry with `SWARMS_TELEMETRY_ON=false`, and selects LiteLLM's bundled model metadata. Those settings do not provide general network isolation.
+
+## Read the application contract
+
+The included file looks like this:
+
+```yaml
+schema_version: 1
+name: release-note-team
+task: |
+  Draft a short announcement for a fictional community garden.
+  The opening day is Saturday, and volunteers can help plant herbs.
+agents:
+  - agent_name: Outline
+    system_prompt: Turn the supplied brief into three concrete outline points.
+    model_name: gpt-4o-mini
+    temperature: 0.2
+  - agent_name: Writer
+    system_prompt: Write a welcoming paragraph from the outline. Preserve the supplied facts.
+    model_name: gpt-4o-mini
+    temperature: 0.2
+```
+
+`schema_version`, `name`, and `task` belong to this companion's application format. They are not newly introduced Swarms YAML fields. The companion validates the whole file, then projects the `agents` section into native Swarms YAML and supplies the task to the workflow separately.
+
+The order of `agents` is meaningful: `Outline` runs before `Writer`. Names must be unique identifiers made from letters, digits, underscores, and hyphens, starting with a letter. Keeping routing punctuation out of names avoids ambiguity when `SequentialWorkflow` constructs its flow.
+
+The application requires at least two agents. It accepts only the documented fields, nonblank prompts/model identifiers/tasks, and finite temperatures between zero and two. The temperature range is this example's configuration contract; a chosen provider may impose additional constraints.
+
+The companion also fixes each agent to one loop, one attempt, final-message output, and no tools, streaming, or persistent agent memory. These execution settings appear in the saved `native_agents` snapshot. To support additional settings, extend the validation contract deliberately rather than relying on misspelled or unreviewed keys passing through to the SDK.
+
+## Load objects without running them
+
+After validation, the companion generates YAML from the validated native agent definitions and calls:
+
+```python
+_, agents = AgentLoader().load_agents_from_yaml(
+    yaml_file=None,
+    yaml_string=payload,
+    return_type="both",
+)
+```
+
+Here `payload` is the generated native YAML string. The released `AgentLoader` forwards this call to `create_agents_from_yaml`. The second element of the `"both"` result supplies the agent list, avoiding an assumption that every loader return mode produces a list.
+
+The native payload deliberately contains no `swarm_architecture`. The application constructs its `SequentialWorkflow` explicitly after loading and validation. It does not select the loader's execution modes, such as `"run_swarm"`, while it is still preparing the team.
+
+Each loaded agent is a real Swarms `Agent`. The companion verifies that its loaded order matches the validated file. In scripted mode, it then replaces each agent's model backend with a deterministic fixture before invoking any agent. Object construction uses the unchanged released loader; fixture inference uses the supplied response strings.
+
+## Run the configured handoff
+
+```bash
+python examples/configured_team/run_team.py run examples/configured_team/team.yaml --output first-run.json
+```
+
+By default, the companion reads `responses.json` beside the script. That file must supply exactly one string per configured agent name. The outline fixture returns outline points; the writer fixture returns a completed announcement. Neither fixture reasons about its prompt.
+
+The real workflow still performs the handoff. The tests inspect the model calls to verify that the first agent receives the original task and the second receives the outline. This establishes execution order and data flow, not the quality of the scripted announcement.
+
+Open `first-run.json` and inspect:
+
+| Field | What it records |
+| --- | --- |
+| `config` | Validated application configuration used by this run |
+| `config_sha256` | Identity of that configuration, including agent order |
+| `native_agents` | Explicit agent settings passed into the SDK loader |
+| `runtime` | Framework, Python, and YAML package versions |
+| `mode` | `scripted` or `provider` |
+| `stages` | Recorded response from each configured agent |
+| `final_output` | Last response, present only when every stage produced usable text |
+
+These fields describe the application's inputs and execution policy. They are not a serialization of every SDK default or internal agent state. Keep the pinned dependency set and the companion source with your report when reproducing a run.
+
+## Keep failures visible
+
+A stage is usable here only when its invocation records a new, nonempty textual assistant response. In the pinned release, an agent may catch an LLM failure internally, so returning from `run()` does not by itself prove that an answer exists.
+
+The report marks the run `failed` if any stage lacks such a response or the workflow raises. It sets `final_output` to null while preserving stage diagnostics. This is an after-run check: the workflow may already have invoked later stages after an earlier problem. The example makes no transactional or fail-fast guarantee.
+
+Exit status `0` means the configuration validation or complete run succeeded. Status `1` means an executed workflow failed its response contract. Status `2` means a handled configuration, input-file, or report-file error. Consult framework logs if an unexpected construction error raises outside these handled cases.
+
+For a real model run, configure the credentials for the model identifiers in your YAML and explicitly opt in:
+
+```bash
+python examples/configured_team/run_team.py run examples/configured_team/team.yaml --live --output provider-run.json
+```
+
+This may incur provider charges. The companion leaves the loader-created model backends in place and records `mode: "provider"`. The tests use scripted models only; a passing validation does not verify credentials, model availability, or provider parameter support.
+
+Continue to [Revise and reproduce a configured run](/configured-teams/revise-and-reproduce) before editing the team or replaying a saved report.

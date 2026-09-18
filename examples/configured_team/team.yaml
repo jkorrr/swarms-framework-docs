@@ -1,0 +1,14 @@
+schema_version: 1
+name: release-note-team
+task: |
+  Draft a short announcement for a fictional community garden.
+  The opening day is Saturday, and volunteers can help plant herbs.
+agents:
+  - agent_name: Outline
+    system_prompt: Turn the supplied brief into three concrete outline points.
+    model_name: gpt-4o-mini
+    temperature: 0.2
+  - agent_name: Writer
+    system_prompt: Write a welcoming paragraph from the outline. Preserve the supplied facts.
+    model_name: gpt-4o-mini
+    temperature: 0.2

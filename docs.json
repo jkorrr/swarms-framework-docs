@@ -244,6 +244,13 @@
             ]
           },
           {
+            "group": "Configured Teams",
+            "pages": [
+              "configured-teams/build-and-run",
+              "configured-teams/revise-and-reproduce"
+            ]
+          },
+          {
             "group": "Model Providers",
             "pages": [
               "examples/model-providers/anthropic",

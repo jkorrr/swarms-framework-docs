@@ -1,0 +1,85 @@
+---
+title: "Revise and reproduce a configured run"
+description: "Diagnose configuration errors before execution and replay the saved setup without silently reading a changed source file"
+icon: "code-branch"
+---
+
+Use the saved configuration from [Build a team from reviewed YAML](/configured-teams/build-and-run) to explain what a run actually used. The file on disk may have changed since yesterday's run. A report that records only its filename cannot tell you which prompts or agent order were executed.
+
+## Distinguish three kinds of errors
+
+Treat YAML syntax, application schema, and execution as separate stages:
+
+| Stage | Example failure | Next action |
+| --- | --- | --- |
+| Parse YAML | Inconsistent indentation or malformed mapping | Fix the indicated YAML location |
+| Validate application configuration | Misspelled field, repeated agent name, blank task | Fix the configuration before constructing agents |
+| Run the loaded team | Empty model response or provider failure | Inspect stage results and runtime logs |
+
+The companion rejects duplicate mapping keys before schema validation. Without this check, a YAML parser can silently retain the later value of a repeated key. The diagnostic reports the duplicate key and its line so you can correct the actual file.
+
+Pydantic diagnostics identify nested field locations. If you change `temperature` to `temprature`, validation reports the missing expected field and the unexpected supplied field. This is a companion rule: the native Swarms agent schema permits extra parameters. Rejecting unknown keys here makes this small application's supported configuration explicit.
+
+Do not treat passing configuration validation as provider validation. It establishes field types, required values, supported version, and agent naming/order. It does not establish that a model exists, accepts a particular temperature, or can be reached from this machine.
+
+## Make one reviewed change
+
+Copy `team.yaml` to `team-v2.yaml`. Add a sentence to the writer's system prompt, such as `Keep the final note under 60 words.` Then validate the new file:
+
+```bash
+python examples/configured_team/run_team.py validate team-v2.yaml
+```
+
+The digest changes because the prompt changed. Whitespace or comments outside YAML values do not change it: the digest is computed from canonical JSON for the validated configuration, not the original file bytes. Whitespace inside a block scalar can change the task or prompt value and therefore its identity.
+
+Agent list order is preserved in that canonical representation. Reordering `Writer` and `Outline` produces a different digest even if their definitions stay the same, because it changes the workflow.
+
+Run the revised file into a new report:
+
+```bash
+python examples/configured_team/run_team.py run team-v2.yaml --output revised-run.json
+```
+
+The default fixture can return the same text after a prompt edit because its responses are scripted. That is expected. Use this run to check configuration loading and handoffs; a provider-backed experiment is a separate activity. This guide does not turn equal fixture output into evidence that the prompt change had no effect on a language model.
+
+If you rename or add an agent, also update the response fixture to match the exact set of configured names and supply it with `--responses`. The companion refuses missing or extra fixture names before constructing any agent.
+
+## Reproduce the stored setup
+
+Replay the original scripted report:
+
+```bash
+python examples/configured_team/run_team.py replay first-run.json --output replayed-run.json
+```
+
+This command reads the validated configuration and scripted responses from `first-run.json`. It does not reopen the original YAML file. Editing or moving that original file therefore cannot silently change this replay.
+
+Before constructing the team, replay checks the report version, pinned Swarms version, configuration digest, and native agent settings against the companion's execution policy. An edited snapshot with an old digest is rejected rather than silently represented as the original configuration.
+
+The digest is an identity and consistency check, not a signature or a claim that the file came from a trusted author. A report is an input document that you review, including the task and prompts it contains.
+
+Replay creates fresh agents and runs the workflow again. It does not resume conversations, restore checkpoints, or recover partially executed work. The saved fixtures make the example's returned strings reproducible; they do not make remote model inference deterministic.
+
+The replay command accepts only scripted reports. To run stored settings with a provider, review the configuration, save it as YAML, validate it, and use the explicit `run --live` path. The application will not interpret replaying an old report as consent to new provider calls.
+
+## Retain enough context to explain a run
+
+Keep the source YAML, report, fixture file when applicable, pinned requirements, and companion revision together. The report contains the task, system prompts, responses, and normalized native agent settings. Treat it as application data when deciding where to share or retain it.
+
+The configured model identifiers remain in a scripted report to show what the authored configuration selected. `mode: "scripted"` explains that those provider backends were replaced before execution. Do not label a fixture result as a response from the named model.
+
+The framework version is pinned because loader defaults and orchestration behavior can change. Python and PyYAML versions are recorded for diagnostics. A replay on a different host still needs a working installation and writable runtime directories; the JSON report is not a bundled execution environment.
+
+## Test the boundary you depend on
+
+Run the companion checks after modifying its configuration schema or loader adapter:
+
+```bash
+python -m pytest examples/configured_team/test_run_team.py -q
+```
+
+The tests exercise the unchanged YAML loader, real agents, and the real sequential workflow. They inspect loaded prompt/settings values and ordered model-call inputs, prohibit provider inference in the scripted handoff test, and replay a report after changing its original source file.
+
+Additional checks reject duplicate YAML keys, unsupported schema versions, unknown fields, invalid names, repeated agent names, non-finite temperatures, and mismatched response fixtures. An empty-stage fixture verifies that a later response does not turn an incomplete pipeline into a completed report.
+
+Keep these checks focused on the configuration and execution contract. They do not grade prose quality or establish that a new prompt performs better. See the [AgentLoader reference](/api/agent-loader) for other loading formats and [CLI configuration](/cli/configuration) for the framework's native YAML execution path.

@@ -1,0 +1,3 @@
+swarms==15.0.3
+PyYAML==6.0.3
+pytest==9.1.1
