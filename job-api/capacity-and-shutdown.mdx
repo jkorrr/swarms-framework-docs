@@ -1,0 +1,93 @@
+---
+title: "Control capacity, cancellation, and shutdown"
+description: "Bound admitted agent jobs, cancel only queued work, and test lifecycle behavior without mistaking a wait deadline for worker termination."
+---
+
+[Part 1](/job-api/submit-and-poll) starts a local agent job API and a submit-and-poll client. This part explains what happens when work arrives faster than workers can finish, when a caller asks to cancel, and when the process shuts down.
+
+## Bound admission as well as worker concurrency
+
+The companion's defaults are:
+
+```python
+service = JobService(
+    factory,
+    workspace=Path("agent_workspace_jobs"),
+    workers=2,
+    max_active=4,
+    max_records=100,
+)
+```
+
+These limits solve different problems:
+
+| Setting | What it limits |
+| --- | --- |
+| `workers` | Jobs that can construct or run agents concurrently |
+| `max_active` | Accepted jobs whose futures are unfinished, including queued and running jobs |
+| `max_records` | Total retained job records across the lifetime of this service instance |
+
+`ThreadPoolExecutor` worker count does not by itself limit how much work callers can queue. `JobService.submit` holds an application lock while checking capacity and spawning the job, so simultaneous HTTP submissions cannot all pass the same capacity check.
+
+When four accepted jobs are unfinished, another POST receives **429** with `Retry-After: 1`. The service does not create an Agent or registry record for that rejected request. The hint is not a reservation; capacity may still be full when the caller tries again.
+
+Finished and cancelled jobs no longer consume active capacity. Their records remain available for polling, including the agent/task information retained by the SDK. This release has no public registry method for deleting an individual completed record. The companion therefore stops accepting new jobs with **503** after 100 retained records instead of reaching into private registry storage. Export results and deliberately restart the local service when needed; restarting discards every in-memory record.
+
+`/health` remains a liveness check. Its `accepting` field becomes false while active capacity is full, when the retained-record limit is reached, or after shutdown begins. These are job-count limits, not memory, token, provider-rate, or spending limits.
+
+## Cancel queued work
+
+Use the ID returned by submission:
+
+```bash
+python examples/background-jobs/client.py cancel task-YOUR-ID
+```
+
+The client sends `DELETE /jobs/{id}`. If the future has not started, cancellation succeeds and polling reports `cancelled`. No Agent is constructed for that queued job. If it already started or completed, the endpoint returns **409**. Unknown IDs return **404**.
+
+A running Python thread cannot be interrupted with `Future.cancel`. The service does not relabel it as cancelled or free its active capacity while it is still working. Closing the client or reaching its polling deadline has the same limitation: neither action stops the worker or guarantees that provider billing stops.
+
+Scripted jobs are often too fast to cancel manually. The integration tests hold one model invocation with a threading event, queue a second job behind it, and exercise both outcomes deterministically. They release the running test model in cleanup so the test process can finish.
+
+## Shut down honestly
+
+Press Ctrl+C in the service terminal. The FastAPI lifespan handler runs `JobService.close` outside the event loop. It:
+
+1. Rejects new submissions.
+2. Cancels jobs still queued in the registry executor.
+3. Shuts down the registry's executor and waits up to five seconds for running jobs.
+4. Reports how many jobs remain running when that waiting period ends.
+
+The grace period must be a finite, nonnegative number. It bounds this wait, not the lifetime of an already running Python thread. Executor threads can keep the Python process alive afterward, and a forced process termination loses the job records. The companion does not implement a durable worker queue, crash recovery, or hard cancellation.
+
+Before a planned shutdown, inspect active job IDs and export terminal results. If your application requires jobs to survive restarts or be forcibly isolated, design a separate worker process and durable job store rather than treating this in-memory example as that system.
+
+## Run the integration tests
+
+From the repository root:
+
+```bash
+python -m pytest -q examples/background-jobs/test_service.py
+```
+
+The suite uses FastAPI's in-process HTTP client, the real `SubagentRegistry`, real `Agent` objects, and deterministic model backends. It does not substitute a fake queue or a fake agent. No provider inference is required.
+
+The checks cover the complete lifecycle: accept and poll a job, reject malformed requests before record allocation, preserve separate agent histories, return failures after construction/backend errors, distinguish queued from running, cancel queued work, and retain terminal results. An event-controlled test sends eight simultaneous submissions with one active slot and requires exactly one admission. Another holds Agent construction while `/health` responds.
+
+The shutdown check proves that queued work is cancelled while an already running model remains active; the polling check proves that a client deadline neither cancels nor resubmits its job. These are behavioral tests, not load-test throughput or production availability claims. The tested dependency set emits a Starlette/AnyIO deprecation warning; it does not change the asserted outcomes.
+
+## Try a provider-backed job separately
+
+Configure credentials for a provider you can access using [model providers](/integrations/model-providers), then restart the service with a model identifier instead of `--scripted`:
+
+```bash
+python examples/background-jobs/service.py --model openai/gpt-4o-mini
+```
+
+This opts into actual inference and may incur API charges. The same submit-and-poll client works without changes. This tutorial's automated validation uses scripted backends only; it does not claim that live-provider requests were tested.
+
+The registry uses `max_retries=0`; the Agent is configured for one loop and one retry attempt. Those settings do not establish an exact count of billable provider requests, since provider adapters can have their own behavior. A successful job means a nonempty response was returned, not that the answer is correct.
+
+Keep this example local and single-process. A shared deployment also needs authentication and ownership checks on every job operation, provider limits, an explicit record-retention policy, and storage that all workers can see. Job IDs provide correlation, not authorization. Those are deployment requirements to design deliberately, rather than properties supplied by this companion.
+
+See the [SubagentRegistry reference](/api/async-subagent) for task-tree and retry features. This guide keeps those features off so one HTTP submission corresponds to one registry task with a straightforward lifecycle.

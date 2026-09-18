@@ -291,6 +291,13 @@
             ]
           },
           {
+            "group": "Background Agent Jobs",
+            "pages": [
+              "job-api/submit-and-poll",
+              "job-api/capacity-and-shutdown"
+            ]
+          },
+          {
             "group": "Auto Agent Builder",
             "pages": [
               "examples/auto-agent-builder/quickstart",
