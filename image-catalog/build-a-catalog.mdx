@@ -1,0 +1,101 @@
+---
+title: "Build an image caption catalog"
+description: "Turn local images into a path-keyed manifest with isolated vision Agents and explicit per-file results"
+icon: "images"
+---
+
+Build a captioning application that keeps every result attached to the image that produced it. You will inspect a local folder, send each valid image to its own Swarms Agent, and write a JSON manifest. In [part two](/image-catalog/export-caption-drafts), you will turn usable results into a CSV without hiding failed images.
+
+The runnable companion is in `examples/image_catalog/` in the documentation repository. It uses Swarms **15.0.3**. Run its commands from the repository root with Python 3.12.
+
+<Note>
+  The default walkthrough uses fixed responses and generated color squares. It exercises real Agents, multimodal input delivery, concurrent execution, and artifact handling. It does not perform visual inference or measure caption quality. Provider execution requires the explicit `--live` option.
+</Note>
+
+## Run the complete local path
+
+Install the companion's pinned requirements in your own environment:
+
+```bash
+python -m pip install -r examples/image_catalog/requirements.txt
+```
+
+Create a new demonstration folder. The command refuses an existing folder so you do not accidentally replace a previous demonstration:
+
+```bash
+python examples/image_catalog/catalog.py demo image-demo
+```
+
+This creates two PNG files in `image-demo/images/` and a filename-to-response mapping in `image-demo/responses.json`. The Unicode filename and caption also exercise UTF-8 artifact handling.
+
+Build the manifest:
+
+```bash
+python examples/image_catalog/catalog.py build image-demo/images --responses image-demo/responses.json --output image-demo/catalog.json
+```
+
+The command ends with a summary like this, after any framework logs:
+
+```json
+{"status": "complete", "files": 2}
+```
+
+Open `image-demo/catalog.json`. Each captioned entry contains a filename, SHA-256 digest, image dimensions, raw Agent output, and validated caption. The manifest records `mode: "scripted"`; the model identifier describes the Agent configuration, not a model that generated those fixture responses.
+
+## Inspect the bytes you will send
+
+The companion reads regular files directly inside the selected folder in sorted filename order. It does not descend into subdirectories. Unsupported filename extensions receive a `skipped` entry instead of disappearing from the manifest.
+
+For PNG, JPEG, and WebP candidates, `inspect_image()`:
+
+1. Enforces an application limit of 10 MiB per file.
+2. Checks the decoded format and rejects animated images.
+3. Enforces a limit of 20 million pixels.
+4. Verifies the image structure and then reopens it to decode its pixels.
+5. Computes a digest and encodes those same bytes as a data URI.
+
+These are application limits, not a claim about every provider's limits. The original image bytes are preserved; the application does not resize images, strip metadata, or change orientation.
+
+Encoding the bytes immediately makes each task's input independent of later source-file edits. A file's digest describes the bytes inspected and supplied to its Agent. It does not authenticate the source or attest that a caption is accurate.
+
+## Bind one image to one Agent
+
+The Swarms batch helper accepts `(runner, task)` pairs. The companion's small `ImageTask` adapter binds an image to a fresh Agent and provides the helper's `run(task)` interface. A new Agent and conversation are created for every valid image.
+
+The essential call supplies an explicit image content block:
+
+```python
+image_turn = {"role": "user", "content": [
+    {"type": "text", "text": "Image to caption:"},
+    {"type": "image_url", "image_url": {"url": self.image}},
+]}
+raw = self.agent.run(task=task, img=self.image, messages=[image_turn])
+```
+
+In Swarms 15.0.3, the Agent's default execution path supplies typed conversation messages to its LiteLLM wrapper. That wrapper prefers those messages over the separate `img` argument. Putting the data URI in the message itself ensures that the image remains in the prepared provider request. The separate `img` also reaches the scripted backend used by the walkthrough.
+
+The adapter checks for a new final response authored by this Agent before returning its text. This matters because a failed Agent call can return existing conversation content. A returned string alone does not establish that the Agent answered.
+
+## Bound the active batch
+
+The application creates Agents only for one window of files at a time:
+
+```python
+outputs = run_agents_with_different_tasks(
+    pairs, batch_size=batch_size, max_workers=batch_size
+)
+```
+
+Use `--batch-size 1` for serial processing or an integer up to 8 for more concurrency. Results remain in input order even when a later image finishes first. The application's manifest retains skipped and invalid files alongside those results.
+
+This bounds the number of active image tasks in this process. It is not a provider rate limit, a token budget, or a cancellation mechanism. Each Agent uses one loop and one Agent-level attempt; provider libraries may have their own retry behavior.
+
+The SDK also has `ImageAgentBatchProcessor`. This companion uses the task helper because the released image processor overwrites its constructor's worker setting and can reuse an Agent if copying it fails. Explicit per-image construction makes the application's state and concurrency rules visible.
+
+## Keep the runtime assumptions explicit
+
+Before importing Swarms, the companion sets `WORKSPACE_DIR`, disables framework telemetry with `SWARMS_TELEMETRY_ON=false`, and selects LiteLLM's bundled model metadata with `LITELLM_LOCAL_MODEL_COST_MAP=True`. These switches do not provide general network isolation.
+
+Use a writable home directory and workspace. Framework conversation setup can create `~/.swarms` even when Agent persistence is disabled. Keep artifacts outside the image folder; the CLI enforces that for its manifest so a later scan does not consume its own output.
+
+Continue to [export caption drafts and handle partial results](/image-catalog/export-caption-drafts).

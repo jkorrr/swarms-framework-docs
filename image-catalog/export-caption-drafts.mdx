@@ -1,0 +1,112 @@
+---
+title: "Export caption drafts and handle partial results"
+description: "Inspect failed image tasks, export usable captions deliberately, and switch the same application to a provider"
+icon: "file-csv"
+---
+
+Use the manifest from [part one](/image-catalog/build-a-catalog) to create a CSV of draft captions. Export is a separate operation: it reads a saved artifact, validates its usable rows, and makes no Agent calls.
+
+## Export the demonstration catalog
+
+Run this after building `image-demo/catalog.json`:
+
+```bash
+python examples/image_catalog/catalog.py export image-demo/catalog.json --output image-demo/captions.csv
+```
+
+The command prints `Exported 2 draft captions`. The UTF-8 CSV has these columns:
+
+| Column | Meaning |
+| --- | --- |
+| `file` | The original filename inside the selected folder |
+| `sha256` | Digest of the inspected bytes supplied to the Agent |
+| `width`, `height` | Dimensions stored in the image |
+| `caption` | A nonblank caption of at most 240 characters |
+
+The CSV writer handles commas, quotation marks, and newlines. Keep the manifest alongside the CSV: it also retains raw responses and the disposition of files that were not exported.
+
+The application accepts only a JSON object with one `caption` field from an Agent. Extra fields, prose around the JSON, blank captions, and oversized captions produce `invalid_caption` entries. `output_type="final"` selects the Agent's final text; Pydantic validates the application payload afterward. It is not a provider-enforced JSON schema.
+
+## Read the result statuses
+
+Every top-level regular file receives an entry. The filename remains its identity within this catalog; result position is not a completion-order identifier.
+
+| Status | What happened | Export behavior |
+| --- | --- | --- |
+| `captioned` | A new Agent response matched the caption schema | Eligible for CSV |
+| `skipped` | Filename extension is outside PNG/JPEG/WebP | Omitted; does not make the run partial |
+| `invalid_image` | File reading, verification, decoding, or an input limit failed | Omitted; makes the run partial |
+| `model_error` | The task raised or the Agent produced no new final response | Omitted; makes the run partial |
+| `invalid_caption` | A new response failed the caption schema | Omitted; makes the run partial |
+
+A `complete` manifest means there were no failed entries. It does not mean every file was captioned: unsupported extensions may have been skipped. Export always refuses a catalog with no usable captions.
+
+Inspect errors without invoking a model again:
+
+```python
+import json
+from pathlib import Path
+
+report = json.loads(Path("image-demo/catalog.json").read_text(encoding="utf-8"))
+for entry in report["entries"]:
+    if entry["status"] not in {"captioned", "skipped"}:
+        print(entry["file"], entry["status"], entry.get("reason"))
+```
+
+An Agent can consume its internal exception and return conversation content. The application records `model_error` when its new-response check fails, but it cannot recover every original provider diagnostic from that return value. Check framework logs when the manifest's reason is generic.
+
+## Exercise a partial run
+
+Add one deliberately invalid PNG to the demonstration folder:
+
+```bash
+python -c "from pathlib import Path; Path('image-demo/images/broken.png').write_bytes(b'not an image')"
+python examples/image_catalog/catalog.py build image-demo/images --responses image-demo/responses.json --output image-demo/partial.json
+```
+
+The build writes the manifest and exits with code **1**. The two good images still have usable captions. The invalid file has an `invalid_image` entry and never reaches an Agent.
+
+Default export refuses a partial catalog before opening its output file:
+
+```bash
+python examples/image_catalog/catalog.py export image-demo/partial.json --output image-demo/partial-captions.csv
+```
+
+After inspecting the manifest, explicitly choose to export only its usable rows:
+
+```bash
+python examples/image_catalog/catalog.py export image-demo/partial.json --output image-demo/partial-captions.csv --allow-partial
+```
+
+`--allow-partial` changes export selection only. It does not retry failures, mark them resolved, or rewrite the manifest. Export also rejects duplicate filenames, unknown statuses, malformed usable rows, and a summary that disagrees with the entry statuses.
+
+| Command outcome | Exit code |
+| --- | --- |
+| Demo created, complete build, or successful export | `0` |
+| Build finished with per-file failures and wrote a partial manifest | `1` |
+| Input, configuration, file operation, or export validation failed | `2` |
+
+These exit codes cover the application's handled outcomes. Agent-construction or batch-helper exceptions stop the entire build; they are not converted into per-image failure entries and may surface as a traceback. Configuration or output-write failures can also stop a build before it saves a manifest. Earlier batches may already have run. Files are written normally, without an atomic-write or crash-recovery guarantee. Choose a new output filename when you need to retain an older artifact.
+
+## Use your own images and a provider
+
+Once you understand the local path, select a vision-capable provider model and configure its credentials as described in [model providers](/integrations/model-providers). Keep the chosen provider's image formats, request limits, and pricing in mind.
+
+```bash
+python examples/image_catalog/catalog.py build my-images --live --model openai/gpt-4o --batch-size 2 --output artifacts/catalog.json
+python examples/image_catalog/catalog.py export artifacts/catalog.json --output artifacts/captions.csv
+```
+
+`--live` sends image content to the configured provider and can incur charges. The example does not strip image metadata. Use images appropriate for that provider and your application. The walkthrough's provider request preparation is tested locally with completion intercepted; no live model inference or provider acceptance is claimed.
+
+Treat all captions as drafts. Schema acceptance proves shape and length, not object recognition, factual accuracy, accessibility suitability, or whether a caption fits the image's surrounding page. Inspect the images and captions before importing them into a publishing system.
+
+## Check the behavior before adapting it
+
+```bash
+python -m pytest examples/image_catalog/test_catalog.py -q
+```
+
+The tests run real Agents and the released batch helper. They force reverse completion, verify exact image bytes and isolated conversations, exercise a throwing model, check corrupted images and input limits, and execute the documented CLI path under a Windows-style redirected encoding. A separate test intercepts the actual LiteLLM completion boundary and verifies that its prepared request contains the image content block.
+
+When adapting the application, preserve that image-to-result mapping and the explicit distinction between usable, skipped, and failed entries. Consult the [vision examples](/examples/vision-agent) for additional prompts and the [Agent reference](/api/agent) for constructor options.

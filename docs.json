@@ -107,6 +107,13 @@
             ]
           },
           {
+            "group": "Image Caption Catalog",
+            "pages": [
+              "image-catalog/build-a-catalog",
+              "image-catalog/export-caption-drafts"
+            ]
+          },
+          {
             "group": "Deployment & Operations",
             "pages": [
               "deployment/production-best-practices",
