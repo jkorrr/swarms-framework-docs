@@ -299,6 +299,13 @@
             ]
           },
           {
+            "group": "Local tracing",
+            "pages": [
+              "local-tracing/capture-local-spans",
+              "local-tracing/inspect-concurrent-runs"
+            ]
+          },
+          {
             "group": "Scheduled Agents",
             "pages": [
               "examples/cron-job/quickstart",

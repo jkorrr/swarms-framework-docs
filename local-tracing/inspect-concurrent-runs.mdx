@@ -1,0 +1,128 @@
+---
+title: "Inspect concurrent Agent runs"
+description: "Interpret trace outcomes, preserve parent relationships across workers, and verify local trace boundaries"
+icon: "magnifying-glass-chart"
+---
+
+Complete [the local capture setup](/local-tracing/capture-local-spans) first. You should have a `trace-run.json` report with three independent Agent jobs. This page explains how to read that report, distinguish execution from validation failures, and keep concurrent jobs attributable to the right trace.
+
+## Read the phase tree
+
+Run the report inspector:
+
+```bash
+python examples/local-tracing/local_tracing.py inspect trace-run.json
+```
+
+The structure below omits variable trace IDs and durations:
+
+```text
+Job 1 completed
+  job: OK
+    agent.execute: OK
+    output.validate: OK
+Job 2 invalid_output
+  job: ERROR
+    agent.execute: OK
+    output.validate: ERROR
+Job 3 execution_error
+  job: ERROR
+    agent.execute: ERROR
+```
+
+`agent.execute` measures Agent construction and `Agent.run`, including work the framework does inside that call. `output.validate` measures the application's response-shape check. The root begins before submission to the worker pool, so it also includes waiting for a worker and orchestration overhead.
+
+For each job, find the span named `job` with `parent_id: null`. Its `trace_id` matches the job's result row. Both child spans share that trace ID and use the root's `span_id` as their `parent_id`. Use these identifiers to join records. Completion order and timestamp ties are not reliable parent relationships.
+
+Duration is elapsed time, not CPU time or model latency. Parallel jobs overlap, so adding their root durations does not give total batch wall time. The gap before `agent.execute` includes pool wait and scheduling, but is not a dedicated queue metric. Very short fixture phases may measure zero milliseconds on a platform's clock. Do not interpret these synthetic timings as provider benchmarks.
+
+## Distinguish the two failure paths
+
+For `invalid_output`, execution produced an assistant reply but the application could not accept its shape. This example requires exactly one JSON field, `summary`, containing 1–240 characters after trimming. It rejects duplicate JSON keys and extra fields. The check does not establish that the summary is factually correct.
+
+For `execution_error`, Agent construction or execution raised, or the call produced no assistant reply. The second condition matters for Swarms 15.0.3: exhausted backend retries can be handled inside the Agent, after which final-output mode can return the latest conversation content. A wrapper that treats every returned string as success could count the original task as an answer.
+
+The companion records the conversation length before the call and requires a subsequent row whose role matches that fresh Agent's name. Only then does it validate the returned summary. A test deliberately supplies a task that already looks like valid summary JSON and makes the backend fail. The result must still be `execution_error`.
+
+The trace intentionally has no detailed exception text. It tells you which phase failed, not the underlying provider cause. Investigate that cause through your backend's error-handling path. Do not infer a rate limit, timeout, or retry count from this generic outcome.
+
+## Keep each worker under the correct root
+
+The coordinator starts one root per submitted job with an explicitly empty OpenTelemetry context:
+
+```python
+from opentelemetry.context import Context
+
+root = tracer.start_span(
+    "job",
+    context=Context(),
+    attributes={"app.job": index + 1},
+)
+future = pool.submit(run_one, index, task, root)
+```
+
+The worker receives that span and attaches it for the duration of the job:
+
+```python
+from opentelemetry import trace
+
+with trace.use_span(
+    root,
+    end_on_exit=True,
+    record_exception=False,
+    set_status_on_exception=False,
+):
+    with tracer.start_as_current_span(
+        "agent.execute",
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as execution:
+        # The companion constructs and runs a fresh Agent here,
+        # then records a fixed outcome on execution.
+        ...
+```
+
+This explicit handoff is needed because ordinary worker threads do not inherit the caller's active OpenTelemetry context. `use_span` restores the worker's previous context when the block exits, including handled failure paths. Reusing a worker must not make its next job a child of the previous job.
+
+The empty root context is a deliberate policy for independent local batch jobs. If your application has a request span that should parent a job, adapt the handoff to carry that request's context instead. Do not copy the empty-root policy blindly into a distributed request workflow. The official [context API](https://opentelemetry-python.readthedocs.io/en/latest/api/context.html) describes context attachment and restoration.
+
+## Adapt the Agent factory
+
+`trace_jobs(tasks, agent_factory=..., workers=...)` accepts 1–100 nonempty tasks and 1–16 workers. The factory receives a zero-based task index and must return a **fresh Agent** with final text output. Do not share an Agent's conversation state between concurrent jobs. Returned run rows remain in input order even when jobs finish out of order.
+
+Create a script alongside `local_tracing.py` to try another local backend:
+
+```python
+from pathlib import Path
+from local_tracing import (
+    ScriptedModel, inspect_report, make_agent, prepare_runtime, trace_jobs,
+)
+
+prepare_runtime(Path("custom-trace-workspace"))
+tasks = ["Summarize a fictional notebook.", "Summarize a fictional tote."]
+responses = ['{"summary":"A plain notebook."}', '{"summary":"A canvas tote."}']
+
+def agent_factory(index):
+    return make_agent(ScriptedModel(responses[index]))
+
+report = trace_jobs(tasks, agent_factory=agent_factory, workers=2)
+print(inspect_report(report))
+```
+
+Replace `ScriptedModel` with your own supported custom `llm` to use another local implementation. You can also opt into a configured provider by returning `make_agent(None, model_name="your-provider/model")`; you supply its credentials and accept its network requests and costs. Provider use was not exercised for this guide. Keep the trace fields fixed unless you deliberately choose to retain additional data.
+
+The batch wrapper waits for submitted jobs to finish. It supplies no per-job timeout, cancellation, durable resume, or streaming trace viewer. Its `finally` block closes tracing resources; it does not cancel a running Agent. Keep the bounded local workload small and configure backend timeouts separately when you adapt it.
+
+## Verify the behavior before adapting it
+
+From the repository root, run:
+
+```bash
+python -m pytest examples/local-tracing -q
+```
+
+The suite exercises the real released Agent, SDK provider, and in-memory exporter. It checks all three outcomes, parent and trace IDs, span timing containment, overlapping workers, reused workers after errors, and restoration of the caller's active context. It inspects raw exported spans as well as the JSON report to ensure that synthetic payload markers and exception events are absent. It also checks that the native HTTP exporter is not created and tests the separate-process CLI with redirected Windows text encoding.
+
+The in-process tests fail if a socket connection is attempted. That test guard is not installed by the companion and is not a general network sandbox. The scripted fixture, dependency pins, and explicit telemetry settings make the tested path reproducible; they do not promise that an arbitrary replacement backend stays local.
+
+Use [native telemetry](/deployment/telemetry) when you want Swarms' automatic component spans, and [monitoring](/deployment/monitoring) for logging and aggregate metrics. This local workflow instead gives you a small, inspectable trace pipeline whose application fields and lifecycle you own.

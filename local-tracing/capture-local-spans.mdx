@@ -1,0 +1,108 @@
+---
+title: "Capture local Agent traces"
+description: "Build an application-owned OpenTelemetry trace pipeline with real Swarms Agents and an in-memory exporter"
+icon: "diagram-project"
+---
+
+When several Agent jobs run at once, a single elapsed-time number cannot tell you which job failed or whether the failure happened during execution or output validation. In this two-part guide, you will capture a separate trace for each job, save a local report, and inspect its phases without putting task text or generated answers in the trace.
+
+This is an **application-owned tracing workflow**. Swarms provides the real `Agent` execution; your application creates the OpenTelemetry spans around it. These spans do not reveal internal model calls, token generation, tools, or retries. The [native telemetry reference](/deployment/telemetry) documents Swarms' automatic instrumentation separately.
+
+The companion uses fixed synthetic model backends to exercise a successful response, an invalid response, and a backend failure. It makes no provider requests and needs no collector, dashboard, account, or API key. Fixture results demonstrate instrumentation behavior; they do not measure model quality or provider performance.
+
+## Install the companion
+
+Clone this documentation repository and work from its root. The [companion directory](https://github.com/The-Swarm-Corporation/swarms-framework-docs/tree/main/examples/local-tracing) contains the runnable script, pinned requirements, and integration tests.
+
+```bash
+python -m venv .venv
+```
+
+Activate that environment with `source .venv/bin/activate` on macOS/Linux, or `.venv\Scripts\Activate.ps1` in PowerShell. Then install the tested dependencies:
+
+```bash
+python -m pip install -r examples/local-tracing/requirements.txt
+```
+
+The companion targets Python 3.10 or newer, `swarms==15.0.3`, and OpenTelemetry API/SDK `1.44.0`. Its integration tests were run with Python 3.12.10. The dependency installation requires network access; the scripted Agent run uses local fixtures.
+
+## Prepare the process before importing Swarms
+
+The command-line entry point calls `prepare_runtime` before importing Swarms. If you use the Python API, call it once at process startup:
+
+```python
+from pathlib import Path
+from local_tracing import prepare_runtime
+
+prepare_runtime(Path("trace-workspace"))
+```
+
+Run this snippet from the companion directory, or add that directory to your Python import path. The function sets these values:
+
+| Setting | Purpose |
+| --- | --- |
+| `SWARMS_TELEMETRY_ON=false` | Opt out of Swarms' native telemetry pipeline |
+| `LITELLM_LOCAL_MODEL_COST_MAP=True` | Use LiteLLM's packaged model cost map during startup |
+| `WORKSPACE_DIR` | Keep the framework workspace under the chosen local directory |
+
+Use a fresh process. Native telemetry has a cached instance; changing its environment variable after it has started does not shut it down. The companion refuses to continue when that instance is active. It also rejects `OTEL_SDK_DISABLED=true`, since a disabled SDK would produce no useful spans.
+
+These settings are not network isolation. A backend that you later supply may make network requests. Framework logging is also separate from traces: error logs can contain task text and exception details even when the trace report omits them. Use the supplied synthetic inputs while following this guide.
+
+## Create a local trace pipeline
+
+The companion constructs the following SDK objects:
+
+```python
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON
+
+memory = InMemorySpanExporter()
+provider = TracerProvider(
+    resource=Resource({"service.name": "local-agent-demo"}),
+    sampler=ALWAYS_ON,
+    shutdown_on_exit=False,
+)
+provider.add_span_processor(SimpleSpanProcessor(memory))
+tracer = provider.get_tracer("swarms-docs.local-tracing", "1.0")
+```
+
+This provider is private to the batch. The companion does not replace the process-wide provider, install automatic instrumentation, or construct an HTTP/OTLP exporter. `SimpleSpanProcessor` sends ended spans directly to the in-memory exporter. An explicit `Resource` keeps this provider's resource fields limited to the service name, without automatically collecting host/process fields or `OTEL_RESOURCE_ATTRIBUTES`.
+
+After all jobs finish, the companion reads `memory.get_finished_spans()` and writes a JSON projection to the path you choose. It shuts the provider down in a `finally` block. The in-memory exporter is appropriate for this bounded diagnostic exercise; it retains finished spans until that batch is released and is not a long-running storage service.
+
+See the official [Python instrumentation guide](https://opentelemetry.io/docs/languages/python/instrumentation/) and [span exporter API](https://opentelemetry-python.readthedocs.io/en/latest/sdk/trace.export.html) for these SDK primitives.
+
+## Run three real Agent jobs
+
+From the repository root:
+
+```bash
+python examples/local-tracing/local_tracing.py run --output trace-run.json --workspace trace-workspace --workers 2
+python examples/local-tracing/local_tracing.py inspect trace-run.json
+```
+
+The run creates a fresh Agent for each synthetic job. Each Agent has one loop, one retry attempt, final output mode, and a scripted custom `llm`. The third backend deliberately raises an exception. Error logs from that fixture are expected.
+
+The report contains three outcomes:
+
+| Job | Fixture behavior | Recorded outcome |
+| --- | --- | --- |
+| 1 | Returns a valid JSON summary | `completed` |
+| 2 | Returns non-JSON text | `invalid_output` |
+| 3 | Raises a synthetic backend exception | `execution_error` |
+
+There are eight spans: three job roots, three execution spans, and two validation spans. Validation is skipped after an execution failure. A completed diagnostic command exits `0` even when a fixture job fails, because it successfully captured the deliberately mixed outcomes. Invalid arguments, an unreadable report, or an existing output file return `2`.
+
+The command creates a new report and refuses to replace an existing one. Choose a new filename for the next run. `inspect` reads the report without importing Swarms or rerunning an Agent.
+
+## Know what the report retains
+
+Each span stores its name, trace/span/parent identifiers, start and end timestamps, duration, status, and a small attribute set. `app.job` is a one-based batch position; `app.outcome` is one of the three fixed outcome names. The report also records the tested framework and SDK versions.
+
+Task text, system prompts, generated summaries, exception messages, and stack traces are absent from this application's spans. Both `record_exception` and `set_status_on_exception` are disabled on span context managers; the wrapper records fixed outcomes explicitly. Otherwise automatic exception events could retain payload details despite a short attribute list. This policy applies to these spans and their local report, not to all logging, memory, or files in the process.
+
+Continue with [interpreting traces and concurrent context](/local-tracing/inspect-concurrent-runs) to connect a failing job to its execution phases and adapt the wrapper to your own Agent factory.
