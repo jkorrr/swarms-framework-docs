@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "variant": "scripted-baseline",
+  "responses": {
+    "billing-01": "{\"label\":\"billing\"}",
+    "technical-01": "{\"label\":\"technical\"}",
+    "account-01": "{\"label\":\"account\"}",
+    "billing-02": "{\"label\":\"billing\"}",
+    "technical-02": "{\"label\":\"technical\"}",
+    "account-02": "{\"label\":\"account\"}"
+  }
+}

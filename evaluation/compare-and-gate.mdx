@@ -1,0 +1,98 @@
+---
+title: "Compare reports and catch regressions"
+description: "Reject incompatible evaluations and use explicit quality gates before changing an agent"
+icon: "code-compare"
+---
+
+Use two complete evaluation reports to decide whether an agent change meets your application's acceptance criteria. This is the second part of [Evaluate an agent on a dataset](/evaluation/run-and-score). Keep the same dataset and scoring policy while changing the agent variant you want to evaluate.
+
+## Generate a candidate report
+
+From the documentation repository root, run the second fixture:
+
+```bash
+python examples/evaluation/evaluate.py run --cases examples/evaluation/cases.jsonl --responses examples/evaluation/candidate-responses.json --output candidate.json
+```
+
+The baseline and candidate response files deliberately produce different answers. This lets you see how the gates behave without paying for model calls. Both reports remain marked as scripted. Their difference is a test scenario, not evidence that one model is better than another.
+
+Compare the reports:
+
+```bash
+python examples/evaluation/evaluate.py compare baseline.json candidate.json
+```
+
+The command writes a JSON comparison to standard output. Inspect the per-case changes as well as the overall decision. Case IDs let you distinguish a newly correct answer from a newly incorrect one even when cases appear in a different order.
+
+For the included candidate, expect four correct answers out of six and five valid outputs out of six. `technical-01` changes to the wrong label, while `account-02` returns prose instead of the required JSON object. Accuracy is approximately `0.667` and valid-output rate is approximately `0.833`. All three default gates fail, and the command exits with status `1`.
+
+## Define the gates before inspecting the candidate
+
+The comparator applies these default thresholds:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--min-accuracy` | `0.8` | At least 80% of all candidate cases must be correct |
+| `--min-valid-rate` | `1.0` | Every candidate answer must satisfy the output contract |
+| `--max-accuracy-drop` | `0.0` | Candidate accuracy must not fall below baseline accuracy |
+
+You can change the thresholds explicitly:
+
+```bash
+python examples/evaluation/evaluate.py compare baseline.json candidate.json --min-accuracy 0.9 --min-valid-rate 1.0 --max-accuracy-drop 0.02
+```
+
+Rates are fractions between zero and one. A maximum accuracy drop of `0.02` permits a decrease of two percentage points, not a relative two-percent decrease.
+
+Choose thresholds based on what your application can tolerate. For a workflow that routes tickets automatically, an invalid output may need to block deployment even when overall accuracy improves. For a workflow reviewed by a person, a different threshold may be appropriate. The example supplies mechanics, not a universal quality target.
+
+Set the policy before looking at the candidate result. Changing thresholds until a preferred variant passes defeats the purpose of the check.
+
+## Check whether the reports are comparable
+
+A comparison requires the same tasks and scoring conditions. The comparator rejects incompatible reports instead of treating missing cases as successes.
+
+Keep these conditions aligned:
+
+- The same case IDs, ticket text, and expected labels.
+- The same label set and output parsing policy.
+- The same framework version and evaluation execution settings.
+- The same kind of run provenance; a scripted fixture is not a baseline for live model quality.
+
+The agent variant is the intended experimental difference. For example, you can compare two prompt revisions while holding the dataset and scoring rules constant. If you change the dataset or parser as well, regenerate the baseline under those conditions before comparing.
+
+A dataset digest prevents an edited file from retaining a misleading old identity. Reordering cases is harmless when their content and stable IDs are unchanged; changing an expected answer is not.
+
+## Interpret the exit status
+
+| Exit status | Meaning | Next action |
+| --- | --- | --- |
+| `0` | All selected gates passed | Review the case changes and other release checks |
+| `1` | At least one quality gate failed | Investigate the changed answers or revise the agent |
+| `2` | Input is invalid or the reports cannot be compared | Fix the evaluation inputs and regenerate reports |
+
+A failed gate is an expected outcome for a regression fixture. Do not suppress exit status `1` in a release job merely to make the job green. Status `2` does not mean that the candidate is worse; it means that this comparison cannot support a decision.
+
+For a passing control, compare the baseline report with itself:
+
+```bash
+python examples/evaluation/evaluate.py compare baseline.json baseline.json
+```
+
+This verifies the comparison path, not an improvement in agent behavior.
+
+## Review regressions before releasing
+
+For each changed case, use its ID to find the input in `cases.jsonl`, then inspect the expected label, raw returned answer, and status in the report. Then classify the problem: a classification error, an output-contract failure, or an execution failure. Re-run suspicious cases, but keep the original complete run instead of replacing only its failures.
+
+If a category matters independently, review its recall even when the aggregate gates pass. The default gates in this tutorial do not enforce a separate recall threshold for every label. Add such a policy deliberately when your application needs it, and keep it consistent across runs.
+
+For provider-backed evaluations, record repeated complete runs. Temperature settings alone do not guarantee deterministic model behavior. A single small dataset cannot establish statistical significance, production reliability, or performance on inputs it does not contain.
+
+## Add the comparison to your development workflow
+
+Run the fixture tests when you change the evaluator. Run your labelled evaluation when you change the agent. Store reports as build artifacts so a reviewer can inspect individual outcomes rather than only a pass/fail badge.
+
+Keep test inputs synthetic or explicitly approved for your chosen model provider. The included tutorial fixtures are fictional and run locally. Switching to a remote model changes where the ticket text is processed.
+
+Use evaluation alongside [monitoring](/deployment/monitoring). Dataset checks can catch known regressions before release; monitoring reveals failures, changing inputs, and operational conditions that your evaluation set did not cover.

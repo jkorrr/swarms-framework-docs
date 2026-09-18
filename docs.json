@@ -107,6 +107,13 @@
             ]
           },
           {
+            "group": "Agent Evaluation",
+            "pages": [
+              "evaluation/run-and-score",
+              "evaluation/compare-and-gate"
+            ]
+          },
+          {
             "group": "Deployment & Operations",
             "pages": [
               "deployment/production-best-practices",

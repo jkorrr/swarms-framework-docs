@@ -1,0 +1,135 @@
+---
+title: "Evaluate an agent on a dataset"
+description: "Build reproducible, case-level evaluation reports with real Swarms agents and an offline fixture model"
+icon: "list-check"
+---
+
+Evaluate a ticket-classification agent before you change its prompt or model. In this two-part guide, you run a labelled dataset through Swarms, distinguish incorrect answers from invalid outputs, and use the resulting reports to catch regressions.
+
+The example classifies fictional support tickets as `billing`, `technical`, or `account`. Each case has a stable ID, an input, and an expected label. The evaluator creates a fresh `Agent` for every case and runs the cases through `run_agents_with_different_tasks`.
+
+<Warning>
+  The included responses are scripted fixtures. They exercise real Swarms agents and the evaluation pipeline without calling a model service. Their scores demonstrate the reporting and comparison rules; they are not measurements of any language model's quality.
+</Warning>
+
+## Install the runnable example
+
+Clone the documentation repository and run the commands from its root:
+
+```bash
+git clone https://github.com/The-Swarm-Corporation/swarms-framework-docs.git
+cd swarms-framework-docs
+python -m venv .venv
+```
+
+Activate the environment with `source .venv/bin/activate` on macOS or Linux, or `.venv\Scripts\Activate.ps1` in Windows PowerShell. Then install the example's dependencies:
+
+```bash
+python -m pip install -r examples/evaluation/requirements.txt
+python -m pytest examples/evaluation/test_evaluate.py -q
+```
+
+The example targets Python 3.10 or later and pins Swarms to `15.0.3`. Keep that version recorded with your reports: changing framework behavior can change what the same agent configuration returns.
+
+## Define the evaluation contract
+
+Start with a small, reviewable dataset. Store one JSON object per line in `cases.jsonl`; do not put a JSON array around the file.
+
+Each row has this schema:
+
+```json
+{"schema_version":1,"id":"billing-01","text":"My invoice includes a charge for the same order twice.","expected":"billing"}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `schema_version` | Select the supported dataset format, currently `1` |
+| `id` | Match the same task across two runs |
+| `text` | The only case content sent to the agent |
+| `expected` | Score the result after execution |
+
+Keep the expected answer outside the agent's task. If you put the answer in its prompt, you measure whether it can repeat the answer rather than classify the ticket.
+
+The loader rejects empty datasets, duplicate IDs, unknown labels, blank lines, and malformed rows. The included dataset covers all three labels. It is deliberately small enough to inspect. It is a fixture for this tutorial, not a representative production sample. For your application, collect representative cases separately from the examples you use to tune your prompt. Include ambiguous inputs and operationally costly mistakes, and review the expected labels before using the dataset as a release check.
+
+Treat case IDs as identifiers, not row numbers. Reordering a file should not make two different tickets look like the same task. If you change ticket text or an expected label, create a new dataset revision and regenerate both reports.
+
+## Run the baseline
+
+```bash
+python examples/evaluation/evaluate.py run --cases examples/evaluation/cases.jsonl --responses examples/evaluation/baseline-responses.json --output baseline.json
+```
+
+The fixture model returns the response associated with each case. The surrounding execution uses the real `Agent` class and batch helper. You can inspect the fixture file to understand exactly which answers are supplied.
+
+The included baseline produces six correct, valid answers: `accuracy` and `valid_output_rate` are both `1.0`. These numbers follow directly from the scripted responses. If your result differs, check the fixture files, dependency version, and per-case statuses before changing any thresholds.
+
+The evaluator requests one final answer per agent with `max_loops=1` and `output_type="final"`. The answer must be JSON text containing exactly one `label` field from the three allowed labels; prose, code fences, and additional fields are invalid. A fresh agent per case prevents one ticket's conversation history from influencing another. This is different from repeatedly calling one stateful agent in a loop.
+
+<Note>
+  The fixture path requires no API key. LiteLLM uses its bundled model metadata instead of fetching the price map on import. Do not interpret an offline fixture run as validation of a remote provider's availability, latency, billing, or inference behavior.
+</Note>
+
+## Read both scores and case outcomes
+
+Inspect `baseline.json` before you look at an aggregate score. It records the dataset identity, framework version, evaluation settings, run variant, and individual case results.
+
+Use separate measurements for separate questions:
+
+| Measurement | Question it answers |
+| --- | --- |
+| Accuracy | How many of all cases produced the expected label? |
+| Valid-output rate | How many of all cases produced an answer the application can consume? |
+| Per-label recall | How many examples of each expected category were classified correctly? |
+| Per-case status | Which answers were incorrect, malformed, or failed during execution? |
+
+Keep invalid answers and execution failures in the denominator. Dropping them can make an unreliable agent appear more accurate. A valid but incorrect `billing` answer is also different from a response your application cannot parse; the report preserves that distinction.
+
+Read low-frequency categories individually. A high aggregate score can hide a regression in a category with few examples. With a six-case fixture, one answer changes accuracy substantially; reporting more decimal places does not make the sample more representative.
+
+## Keep the experiment reproducible
+
+Save the input dataset, agent configuration, parser policy, and report together. Record what changed between runs, such as a prompt revision or model selection. Do not silently repair failed answers by hand before scoring them.
+
+## Evaluate your own model-backed agent
+
+The CLI's `run` command deliberately uses fixture responses. For an actual model experiment, use the same evaluator with a factory that creates your configured agent. Save this as `examples/evaluation/run_provider.py`:
+
+```python
+import json
+import os
+from pathlib import Path
+
+from evaluate import evaluate_cases, load_cases, make_agent
+
+here = Path(__file__).resolve().parent
+cases = load_cases(here / "cases.jsonl")
+model_name = os.environ["EVAL_MODEL_NAME"]
+
+
+def classifier(case):
+    return make_agent(f"eval-{case.id}", model_name=model_name)
+
+
+report = evaluate_cases(
+    cases,
+    classifier,
+    variant=os.environ["EVAL_VARIANT"],
+    mode="provider",
+    workspace=Path(".swarms-evaluation-workspace"),
+)
+Path("provider-report.json").write_text(
+    json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+    encoding="utf-8",
+)
+```
+
+Configure a model and its credentials using [Model providers](/integrations/model-providers). Set `EVAL_MODEL_NAME` to its model identifier and `EVAL_VARIANT` to a name for this configuration, then run `python examples/evaluation/run_provider.py`. This optional command sends the ticket text to your chosen provider and may incur its usage charges. It was not used to produce the included fixture results.
+
+The factory receives a case so it can create a unique agent name. Do not use `case.expected` to construct the agent or its task. To test another prompt, pass `system_prompt` to `make_agent`, preserving the JSON label contract, and give the new run a distinct variant name. Model, prompt digest, and temperature are recorded as experiment metadata; they may differ between baseline and candidate.
+
+Re-run the entire dataset for each variant and save each report under a different filename. A deterministic fixture verifies the evaluation code; a provider-backed run evaluates the configured agent on your chosen cases. These are different experiments and retain different `mode` values. Do not compare a provider report with a scripted report.
+
+The evaluator selects a local workspace for framework logs. Swarms `15.0.3` can also create its default conversation directory under your home directory, even though this example disables persistent memory. Run the tutorial in an environment where those ordinary local directories are writable.
+
+Continue with [Compare reports and catch regressions](/evaluation/compare-and-gate) to turn these reports into an explicit release decision.

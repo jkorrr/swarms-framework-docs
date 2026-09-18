@@ -1,0 +1,6 @@
+{"schema_version":1,"id":"billing-01","text":"My invoice includes a charge for the same order twice.","expected":"billing"}
+{"schema_version":1,"id":"technical-01","text":"The desktop app crashes every time I export a PDF.","expected":"technical"}
+{"schema_version":1,"id":"account-01","text":"Please change the email address associated with my profile.","expected":"account"}
+{"schema_version":1,"id":"billing-02","text":"I returned my purchase but have not received the promised refund.","expected":"billing"}
+{"schema_version":1,"id":"technical-02","text":"Search returns a blank screen after the latest app update.","expected":"technical"}
+{"schema_version":1,"id":"account-02","text":"I want to update my display name and profile picture.","expected":"account"}
