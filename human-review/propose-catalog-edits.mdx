@@ -1,0 +1,117 @@
+---
+title: "Prepare catalog edits for human review"
+description: "Use a Swarms Agent to propose description changes while your application keeps the source catalog unchanged"
+icon: "file-pen"
+---
+
+Let an agent suggest catalog wording while a person decides which changes to use. In this two-part tutorial, your application saves a pending proposal, shows the exact edits, records an explicit decision, and writes an approved copy only when the source revision still matches.
+
+The example uses three fictional products in a local JSON file. The agent may propose new descriptions. It cannot change prices, product names, or SKUs through the proposal format. Your Python application validates the response and owns the files and review steps.
+
+<Note>
+  This is an application workflow around the real Swarms `Agent`, not a built-in approval feature or a paused agent process. The agent finishes before review begins. You can close the terminal and continue from the saved files later.
+</Note>
+
+## Install the example
+
+Clone the documentation repository and run the following commands from its root:
+
+```bash
+git clone https://github.com/The-Swarm-Corporation/swarms-framework-docs.git
+cd swarms-framework-docs
+python -m venv .venv
+```
+
+Activate with `source .venv/bin/activate` on macOS or Linux, or `.venv\Scripts\Activate.ps1` in Windows PowerShell. Then install and test:
+
+```bash
+python -m pip install -r examples/human-review/requirements.txt
+python -m pytest examples/human-review/test_catalog_review.py -q
+```
+
+The example targets Python 3.10 or later and pins Swarms to `15.0.3`. The companion directory contains the command-line program, a synthetic catalog, a scripted response, and tests.
+
+The fixture exercises the real `Agent` class with a custom model backend. It makes no model API calls and needs no provider key. Its successful run shows that the workflow handles known responses; it does not measure a model's writing quality or factual accuracy.
+
+## Separate proposals from decisions
+
+Keep three kinds of artifact distinct:
+
+| Artifact | What it records |
+| --- | --- |
+| Source catalog | Product data before any proposed edits |
+| Pending proposal | Suggested descriptions, their original values, reasons, and the source revision |
+| Review decision | An explicit approval or rejection of one exact proposal |
+
+The approved catalog is a fourth, separate output. Generating a proposal produces neither a decision nor that output. The CLI creates new artifact files and refuses to replace existing ones, so use a new run directory when you want another attempt.
+
+Open `examples/human-review/catalog.json`. Each product has `sku`, `name`, `description`, and integer `price_cents` fields. The application sends only the SKU, name, and description to the agent. The source revision covers the entire original file, including prices, so even an unrelated source edit invalidates an old proposal.
+
+## Generate a pending proposal
+
+Run the supplied fixture:
+
+```bash
+python examples/human-review/catalog_review.py propose --catalog examples/human-review/catalog.json --response examples/human-review/fixture-response.json --proposal review-run/pending.json
+```
+
+This command configures one non-streaming agent with `max_loops=1`, `retry_attempts=1`, and `output_type="final"`. It asks for structured description edits and then validates the returned JSON before saving anything.
+
+The accepted model response has this shape:
+
+```json
+{
+  "changes": [
+    {
+      "sku": "MUG-01",
+      "description": "A blue ceramic mug with a 300 ml capacity.",
+      "reason": "Combine the existing facts into one complete sentence."
+    }
+  ]
+}
+```
+
+The application rejects extra fields, duplicate JSON keys, unknown or repeated SKUs, empty changes, unchanged descriptions, and invalid text values. A model-supplied `approved` field or price change is outside this contract. A failed model call also cannot become a pending proposal: the program checks that the real agent added an assistant response before parsing its final output.
+
+Validation establishes the response shape and the permitted edit scope. It does not establish that a rewritten description is true. For example, adding an unsupported “dishwasher-safe” claim could satisfy the schema. The reviewer must still compare factual claims with the original product information.
+
+## Understand the pending file
+
+Inspect `review-run/pending.json`. The application, rather than the model, supplies:
+
+- A new proposal ID.
+- A SHA-256 revision of the exact source bytes.
+- Each description's original `before` value.
+- The generation mode and installed Swarms version.
+
+The model supplies the suggested `after` text and its reason. Keeping both original and proposed wording makes the next review concrete. The original catalog remains unchanged.
+
+`generation.mode` is `scripted` for this command. The fixture suggests two edits: clearer sentences for the mug and tote. The notebook is untouched. The `model_name` identifies the model configuration used by the Agent; in scripted mode, the custom backend supplies the answers instead of that provider.
+
+## Use a provider when you want actual suggestions
+
+The CLI's `propose` command intentionally runs the fixture. For a real suggestion, save this optional script as `examples/human-review/propose_with_provider.py`:
+
+```python
+import os
+from pathlib import Path
+
+from catalog_review import propose
+
+propose(
+    Path("examples/human-review/catalog.json"),
+    Path("provider-review/pending.json"),
+    llm=None,
+    mode="provider",
+    model_name=os.environ["REVIEW_MODEL_NAME"],
+    workspace=Path(".swarms-review-workspace"),
+)
+```
+
+Configure the model and its credentials using [Model providers](/integrations/model-providers), set `REVIEW_MODEL_NAME`, and run that script from the repository root. It sends the product text to the selected provider and may incur usage charges. The tutorial's verification does not execute this optional provider path.
+
+The rest of the workflow remains the same for provider output: parse the response, save a pending proposal, and review the exact changes. An agent's own statement that its work is approved does not create a review decision.
+
+Before importing Swarms, the example selects a local workspace, opts out of framework telemetry, and tells LiteLLM to use its bundled model-cost map. These settings are not a universal network-isolation guarantee. Swarms `15.0.3` can also create its normal conversation directory under your home even when persistent memory is disabled; those local directories must be writable.
+
+Continue with [Review and apply an exact proposal](/human-review/review-and-apply).

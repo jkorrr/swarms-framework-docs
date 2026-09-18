@@ -1,0 +1,6 @@
+{
+  "changes": [
+    {"sku": "MUG-01", "description": "A blue ceramic mug with a 300 ml capacity.", "reason": "Combine the existing facts into one complete sentence."},
+    {"sku": "BAG-03", "description": "A cotton canvas tote with an inside pocket.", "reason": "Describe the material and pocket in one sentence."}
+  ]
+}

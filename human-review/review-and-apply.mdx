@@ -1,0 +1,92 @@
+---
+title: "Review and apply an exact proposal"
+description: "Preview a catalog diff, record approval or rejection, and stop when the source or reviewed proposal changes"
+icon: "clipboard-check"
+---
+
+Continue from the pending proposal created in [Prepare catalog edits for human review](/human-review/propose-catalog-edits). Your next action is to inspect the proposed wording. No model call is needed to preview, decide, or apply.
+
+This example is intended for one reviewer running one local command at a time. The application implements the review protocol; it does not keep a Swarms agent alive while waiting for input.
+
+## Preview the exact changes
+
+```bash
+python examples/human-review/catalog_review.py preview --catalog examples/human-review/catalog.json --proposal review-run/pending.json
+```
+
+The command checks the source revision and prints a unified JSON diff, the reasons for the edits, and a `Reviewed SHA-256` value. The diff uses a consistent JSON layout so you can inspect changed values without being distracted by the source file's compact formatting.
+
+For the fixture, only two descriptions change. Product names, SKUs, prices, and the notebook description stay the same. Check the diff yourself before deciding. A plausible reason from the agent is not evidence that a newly introduced product claim is correct.
+
+The reviewed digest identifies the entire pending proposal, including its reasons and source revision. Copy it from the preview. If someone edits the proposal afterward, the old digest no longer identifies the content you saw.
+
+## Record one explicit decision
+
+To approve, replace `REVIEWED_SHA256` with the value you inspected:
+
+```bash
+python examples/human-review/catalog_review.py decide --proposal review-run/pending.json --decision review-run/decision.json --choice approve --reviewer tutorial-editor --reviewed-sha256 REVIEWED_SHA256
+```
+
+Use your own reviewer label in a real workflow. The command checks the supplied digest against the current proposal and writes the choice, proposal ID, digest, label, and timestamp into `decision.json`.
+
+If you do not accept the proposed edits, use the same command with `--choice reject` instead. Choose one decision for this run. The CLI refuses to overwrite an existing decision file. To revise or reconsider a rejected proposal, create a new proposal in a new run directory and review it again.
+
+Previewing creates no decision. Generating a proposal creates no decision. The `decide` command does not infer approval from the agent's wording, an elapsed deadline, or the existence of a file.
+
+## Apply to a separate catalog
+
+After approval, run:
+
+```bash
+python examples/human-review/catalog_review.py apply --catalog examples/human-review/catalog.json --proposal review-run/pending.json --decision review-run/decision.json --output review-run/catalog-reviewed.json
+```
+
+Before writing, the application checks that:
+
+- The source bytes still match the proposal's source revision.
+- Every original description matches the proposal's `before` value.
+- The supplied decision explicitly approves this proposal ID and digest.
+- The output is a new path, separate from the source, proposal, and decision.
+
+If any check fails, the command returns exit status `2` and does not create the requested output. A successful command returns `0` and writes a new catalog containing only the approved description changes. The original input file remains unchanged.
+
+Use the new file as a reviewable result. This tutorial does not upload it, publish a product listing, or replace a production catalog. Those actions would need their own application integration and acceptance rules.
+
+## Handle a stale source
+
+Suppose another editor corrects the mug's price after you generate the proposal. Applying the old proposal now fails, even though its suggested edits concern descriptions. The source hash deliberately uses exact file bytes. Reformatting the JSON also changes the revision.
+
+This strict policy is easy to understand: the result must come from the source version that was reviewed. When it fails:
+
+1. Keep the old proposal and decision for reference.
+2. Generate a fresh proposal from the current catalog into a new run directory.
+3. Review the new diff and record a new decision.
+
+Do not change the stored source hash merely to make an old proposal apply. If your application needs record-level reconciliation, implement and review that as a different policy. This example does not automatically merge concurrent edits.
+
+## Handle a changed proposal or rejected decision
+
+Editing an `after` description or even its reason changes the proposal digest. If this happens between preview and approval, `decide` asks you to preview again. If it happens after approval, `apply` refuses to use the old decision.
+
+A rejection has a different meaning: the input may still be current, but the reviewer chose not to use that proposal. Passing a rejected decision to `apply` fails without creating a catalog. A missing decision fails as well.
+
+The digest connects a decision to specific content. It is not a signature or proof of reviewer identity: this local example has no authentication, permissions, or protection against someone who can rewrite all its files. The reviewer field is a descriptive label. Do not use it as a verified identity in another system.
+
+## Understand the persistence limits
+
+The saved files let separate CLI processes continue the workflow without restoring agent memory. A proposal can wait for a person; review and application use ordinary Python and do not spend more model tokens.
+
+The commands refuse to overwrite existing artifacts, but this is not a database transaction or an exactly-once execution system. A crash during a file write can leave an incomplete artifact. Preserve it for diagnosis and start a new run rather than treating its presence as success. An approved proposal can also be applied to another new output path; the decision is not consumed.
+
+For shared services, choose an authoritative store and define how concurrent reviewers, decisions, and writes are coordinated. The tutorial demonstrates the local lifecycle and revision checks, not that larger service.
+
+## Check the workflow as you change it
+
+```bash
+python -m pytest examples/human-review/test_catalog_review.py -q
+```
+
+The tests exercise real Swarms Agent calls with deterministic backend responses, including malformed proposals and a backend failure. They also check exact previewed values, explicit approval and rejection, source changes, proposal edits after review, preservation of unchanged catalog fields, CLI exit statuses, and refusal to replace existing artifacts.
+
+These checks establish the behavior of the example. They do not establish that a person reviewed the sample output, that a model preserves product facts, or that a production publishing system has the same guarantees. Keep those responsibilities explicit when you adapt the workflow.

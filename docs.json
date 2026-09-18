@@ -299,6 +299,13 @@
             ]
           },
           {
+            "group": "Human review",
+            "pages": [
+              "human-review/propose-catalog-edits",
+              "human-review/review-and-apply"
+            ]
+          },
+          {
             "group": "Scheduled Agents",
             "pages": [
               "examples/cron-job/quickstart",

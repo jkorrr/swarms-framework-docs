@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "products": [
+    {"sku": "MUG-01", "name": "Blue ceramic mug", "description": "Blue mug. Ceramic. Holds 300 ml.", "price_cents": 1200},
+    {"sku": "NOTE-02", "name": "Pocket notebook", "description": "Notebook with 80 lined pages and a kraft cover.", "price_cents": 450},
+    {"sku": "BAG-03", "name": "Canvas tote", "description": "Cotton canvas bag. Has an inside pocket.", "price_cents": 1800}
+  ]
+}
