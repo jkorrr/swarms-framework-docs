@@ -1,0 +1,85 @@
+---
+title: "Stop generation and clean up the worker"
+description: "Exercise failure, timeout, and cancellation paths without saving incomplete agent output"
+icon: "stop"
+---
+
+Make cancellation an explicit state in the application from [Preview a draft and save its completed result](/streaming/preview-and-complete). Stopping a display, stopping local execution, and cancelling a remote provider request are separate operations. This guide implements the second operation for the child process it owns.
+
+## Choose the owner of the work
+
+For basic token consumption, Swarms exposes `run_stream()` and `arun_stream()`. The pinned `15.0.3` implementations start background threads and forward tokens through queues. Closing a generator or leaving its loop does not provide a documented mechanism to terminate that worker. Do not tell a user that generation stopped merely because their display stopped receiving tokens.
+
+The companion uses `Agent.run(streaming_callback=...)` inside a separate process instead. The parent keeps the process handle, the cancellation flag, the deadline, and the final output path. The child sends preview events and a terminal result through a one-way pipe.
+
+The child is created with Python's `spawn` multiprocessing context. This also exercises the Windows execution model: construct the agent inside the child and protect the program entry point with `if __name__ == "__main__"`. A live agent contains runtime state that this example does not attempt to serialize between processes.
+
+## Observe a partial failure
+
+Run the success example first, then run the failing fixture against the same output path:
+
+```bash
+python examples/stream_lifecycle/stream_artifact.py --output draft.json
+python examples/stream_lifecycle/stream_artifact.py --scenario partial-failure --output draft.json
+```
+
+The second run shows the first chunk and ends with `failed`. Its exit status is `1`. The earlier completed `draft.json` remains unchanged.
+
+The scripted backend raises after yielding that first chunk. This failure travels through real Swarms streaming code, including its retry handling. The companion detects the missing assistant reply even when `Agent.run()` returns without raising. The preview stays available in the returned `Outcome` for the application to display as incomplete.
+
+The `failure` fixture fails before producing text. The `empty` fixture produces no text and is rejected by this application's nonempty-draft contract. Neither creates a completed artifact.
+
+## Cancel after receiving content
+
+Use the stalled fixture to distinguish stopping consumption from stopping execution:
+
+```bash
+python examples/stream_lifecycle/stream_artifact.py --scenario stall --cancel-after-first --output cancelled.json
+```
+
+The fixture yields one real callback chunk and then waits indefinitely inside its model generator. The parent's preview callback sets a `threading.Event`. On its next control-loop iteration, the parent observes cancellation, terminates the local child, and waits for it to exit. It returns `cancelled`; it does not create `cancelled.json`.
+
+For an application with a separate control surface, keep that event in the parent and set it from the application's stop action. The event itself is not sent to the child. The parent uses the process handle to stop execution, so cancellation does not depend on the stalled model reaching another callback.
+
+The CLI also catches `KeyboardInterrupt` in the parent's receive loop and enters cancellation cleanup. Deterministic tests use the event path rather than relying on terminal-specific keyboard-signal delivery.
+
+<Warning>
+  Terminating this child stops its local Python execution. It does not guarantee that a remote provider stops generation or billing. The example has no tools; stopping a process would not undo a tool's completed external action. Use it for the tool-free draft contract described here.
+</Warning>
+
+## Enforce a deadline
+
+Run the same stalled fixture with a time limit:
+
+```bash
+python examples/stream_lifecycle/stream_artifact.py --scenario stall --timeout 10 --output timed-out.json
+```
+
+The application uses elapsed monotonic time. The ten seconds includes process startup, imports, agent construction, and generation. On a slow machine, it may expire before the first token arrives. A timeout still leaves no completed artifact.
+
+The deadline is checked between receive operations. It is not a real-time guarantee: a slow `on_preview` callback delays those checks. Cleanup waits are separate and bounded. The parent first terminates the child, then uses a stronger kill if it remains alive. It checks the process exit status before returning.
+
+The child does not own the output artifact, so killing it cannot leave a half-written final JSON file. Its runtime workspace can still contain framework logs. Treat those logs and any displayed partial text as diagnostics, not as a completed response.
+
+## Handle each outcome explicitly
+
+| Status | What happened | Artifact behavior |
+| --- | --- | --- |
+| `complete` | Verified text arrived and the child exited normally | Replace the final JSON artifact |
+| `failed` | Generation, response validation, or child completion failed | Preserve the existing artifact |
+| `cancelled` | The parent observed cancellation before commit | Preserve the existing artifact |
+| `timed_out` | The run exceeded the parent deadline | Preserve the existing artifact |
+
+The returned `Outcome` also contains preview text, a diagnostic, the child PID, and its exit code. A preview-sink exception propagates after cleanup; invalid arguments and artifact-write errors also raise. These are application failures, not generated drafts.
+
+For the CLI, exit status `0` means completion, `1` means an unsuccessful run outcome, and `2` means a handled input or file-operation error. Inspect the printed status to distinguish a cancellation from a model failure.
+
+Cancellation is observed before accepting a completion event and once more before committing its artifact. It cannot revoke an artifact that has already been committed. If your UI permits a stop action after completion, show the already-completed state instead of presenting that action as a rollback.
+
+## Keep the failure checks runnable
+
+The tests use actual spawned processes and actual Swarms agents with deterministic streaming backends. They check that preview callbacks occur while the old artifact is still in place, Unicode survives the saved JSON, and a partial backend failure cannot be accepted as completion. They also cancel a worker stalled after its first token, enforce a deadline, and verify child cleanup when the preview sink raises.
+
+These tests establish local lifecycle behavior. They do not validate a remote provider's cancellation endpoint, billing, network deadlines, or behavior after abrupt disconnection. Add provider-specific checks when you move beyond the offline fixture.
+
+See [Agent streaming](/examples/agent-streaming-example) for the simpler generator APIs and [Agent output types](/agents/structured-outputs) for transcript formatting. Keep the completion checks aligned with the exact kind of output your application accepts.

@@ -1,0 +1,118 @@
+---
+title: "Preview a draft and save its completed result"
+description: "Consume real Swarms streaming callbacks while keeping partial text separate from an accepted artifact"
+icon: "file-lines"
+---
+
+Show a draft as it arrives, then save it only when generation finishes successfully. A token callback is useful feedback, but receiving text does not prove that the agent completed its response. A provider can fail after producing half a paragraph.
+
+This two-part guide builds a local command-line application around one tool-free `Agent`. Part one defines preview and completion states. Part two adds [cancellation, deadlines, and cleanup](/streaming/stop-and-clean-up). The companion runs with a scripted streaming model by default, so you can test these behaviors without an API key or model charges.
+
+## Run the companion
+
+Clone the documentation repository and run these commands from its root:
+
+```bash
+git clone https://github.com/The-Swarm-Corporation/swarms-framework-docs.git
+cd swarms-framework-docs
+python -m venv .venv
+```
+
+Activate the environment with `source .venv/bin/activate` on macOS or Linux, or `.venv\Scripts\Activate.ps1` in Windows PowerShell. Then install the pinned example dependencies and run the tests:
+
+```bash
+python -m pip install -r examples/stream_lifecycle/requirements.txt
+python -m pytest examples/stream_lifecycle/test_stream_artifact.py -q
+python examples/stream_lifecycle/stream_artifact.py --output draft.json
+```
+
+The example uses Python 3.10 or later and Swarms `15.0.3`. Keep the version pinned while following the guide: the handling of errors and streaming callbacks is part of the behavior being tested. Run it as a normal user with a writable home directory. Swarms conversation initialization may create `~/.swarms` even when persistent memory is disabled; `--workspace` is not a promise that every runtime file stays under that directory.
+
+You see four content chunks followed by `complete`. The resulting `draft.json` contains the full text, a completion status, the framework version, and `mode: "scripted"`. Inspect that mode before treating the output as a model result. The fixture supplies predetermined content; the real `Agent` still processes its streaming chunks, invokes callbacks, and records the final assistant message.
+
+<Note>
+  The fixture needs no API key. Before imports, the child configures LiteLLM to use its bundled model metadata and sets the released Swarms telemetry switch to `SWARMS_TELEMETRY_ON=false`. These settings are not a general network isolation mechanism. This exercise tests the application and Swarms execution path; it does not measure a provider's speed, quality, or reliability.
+</Note>
+
+## Define what completion means
+
+The application exchanges three event types between a child process and its parent:
+
+| Event | Meaning | Parent action |
+| --- | --- | --- |
+| `token` | New preview text arrived | Display it without updating the saved artifact |
+| `complete` | The child validated the final response | Wait for normal child exit, then save |
+| `error` | The child could not validate a completed response | Retain the previous artifact |
+
+The child owns one fresh agent. The parent owns the preview display and the artifact. A local pipe carries events in order. This is an application protocol in the companion, not a new Swarms event API.
+
+The separation gives you a clear rule: the file changes only after an accepted completion. A cancelled run may leave visible preview text on the screen, but that text never becomes the saved draft. If `draft.json` already exists, a failed run leaves its contents unchanged.
+
+## Use the callback without confusing it with the return value
+
+The companion configures the agent with these settings:
+
+```python
+Agent(
+    agent_name="DraftWriter",
+    llm=fixture_model,
+    system_prompt="Write a short plain-text draft for the supplied task.",
+    max_loops=1,
+    retry_attempts=1,
+    streaming_on=True,
+    stream=False,
+    print_on=False,
+    output_type="final",
+    autosave=False,
+    persistent_memory=False,
+    context_compression=False,
+    dynamic_context_window=False,
+)
+```
+
+This is the configuration excerpt; use `stream_artifact.py` for the complete runnable program. `streaming_on=True` selects text callbacks. `stream=False` avoids the separate detailed streaming callback shape. `print_on=False` lets the application control its display. `output_type="final"` asks Swarms for the last conversation message when `run()` returns.
+
+The callback sends each text chunk to the parent. The parent invokes `on_preview(text)` synchronously. Keep this callback short: write the text, update a local display, or enqueue a small update. A blocking display callback also delays the parent's cancellation and timeout checks.
+
+The pipe provides backpressure when its operating-system buffer fills. It does not make this example a bounded-memory renderer: both the application and the agent retain the response. For long documents, choose an output-size policy before adapting the example.
+
+## Verify the final response
+
+In the pinned release, the agent's retry loop can log and swallow an LLM failure. After that failure, `output_type="final"` can return the latest conversation entry even when no assistant answer was produced. A successful Python return therefore does not establish completion.
+
+The child records the conversation length before execution. After `agent.run()`, it requires a new entry under the agent's name. It also requires nonempty text and checks that the returned response exactly matches the callback text it collected. Only then does it send `complete`.
+
+These checks deliberately target one loop, text-only output, and no tools. Do not apply the text-equality rule unchanged to a multi-loop agent: its callback stream may contain earlier turns while `output_type="final"` contains only the last one. Tool calls, structured responses, reasoning content, and fallback providers each need their own output contract.
+
+## Save after the child exits
+
+The parent receives the completion event, waits for the child to exit normally, and compares the final output with its own received preview. A nonzero exit status invalidates completion. This catches a child that reports completion but then fails during shutdown.
+
+The parent writes JSON to a temporary file in the destination directory, closes it, and uses `os.replace` to replace the final artifact. The previous artifact remains in place until that replacement succeeds. An application write error is reported to the caller; receiving a completion event does not hide a disk error.
+
+This protects against publishing an incomplete run through this application. It is not a promise of crash durability across a power failure, and it does not coordinate multiple writers targeting the same path. Use a distinct output path for each simultaneously running invocation.
+
+## Connect a configured model
+
+The CLI is intentionally fixture-only. To opt into a provider you already use, import the companion and pass its model identifier to `run_to_artifact`. Place this script beside `stream_artifact.py`:
+
+```python
+from pathlib import Path
+from stream_artifact import run_to_artifact
+
+
+if __name__ == "__main__":
+    result = run_to_artifact(
+        "Draft a short welcome note for new volunteers.",
+        Path("welcome.json"),
+        workspace=Path(".welcome-workspace"),
+        model="openai/gpt-4o-mini",
+        timeout=120,
+        on_preview=lambda text: print(text, end="", flush=True),
+    )
+    print(result.status, result.detail)
+```
+
+Configure the selected provider's credentials before running that script. A provider-backed run can incur charges and is marked `mode: "provider"`. The offline tests do not establish compatibility with every model's streaming format. Test your chosen model with this text-only contract before relying on the resulting artifacts.
+
+Continue with [Stop generation and clean up the worker](/streaming/stop-and-clean-up) to handle partial failures, stalled calls, and user cancellation.

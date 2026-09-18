@@ -244,6 +244,13 @@
             ]
           },
           {
+            "group": "Streaming Applications",
+            "pages": [
+              "streaming/preview-and-complete",
+              "streaming/stop-and-clean-up"
+            ]
+          },
+          {
             "group": "Model Providers",
             "pages": [
               "examples/model-providers/anthropic",
