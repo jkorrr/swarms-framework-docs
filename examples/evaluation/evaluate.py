@@ -109,6 +109,7 @@ def prepare_framework(workspace: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     os.environ["WORKSPACE_DIR"] = str(workspace.resolve())
     os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    os.environ["SWARMS_TELEMETRY_ON"] = "false"
 
 
 def make_agent(name: str, *, llm: Any = None, model_name: str = "gpt-4o-mini", system_prompt: str = PROMPT) -> Any:
