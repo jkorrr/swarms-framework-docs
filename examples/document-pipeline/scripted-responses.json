@@ -1,0 +1,20 @@
+{
+  "Facts": {
+    "facts": [
+      {"id": "fact-1", "statement": "The pilot will launch on 5 October with the existing export format.", "evidence": [{"line": 2, "quote": "the pilot will launch on 5 October with the existing export format"}]},
+      {"id": "fact-2", "statement": "The import test used synthetic records only.", "evidence": [{"line": 3, "quote": "120 synthetic records; production data was not tested"}]},
+      {"id": "fact-3", "statement": "Billing integration is excluded from the pilot.", "evidence": [{"line": 6, "quote": "billing integration is out of scope for the pilot"}]}
+    ]
+  },
+  "Actions": {
+    "actions": [
+      {"id": "action-1", "description": "Publish the migration checklist.", "owner": "Maya", "due": "25 September", "evidence": [{"line": 4, "quote": "Maya will publish the migration checklist by 25 September"}]},
+      {"id": "action-2", "description": "Assign an owner to review accessibility before launch.", "owner": null, "due": null, "evidence": [{"line": 5, "quote": "The team must assign an owner to review accessibility before launch; no owner or date was agreed."}]}
+    ]
+  },
+  "Brief": {
+    "summary": "The pilot targets 5 October using the existing export format. Import testing has covered synthetic data only, and billing is excluded. Maya owns the migration checklist due 25 September. Accessibility review still needs an owner and date.",
+    "fact_ids": ["fact-1", "fact-2", "fact-3"],
+    "action_ids": ["action-1", "action-2"]
+  }
+}

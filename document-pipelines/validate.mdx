@@ -1,0 +1,108 @@
+---
+title: "Validate document handoffs and failures"
+description: "Reject invalid evidence, block synthesis after a failed analysis, and test the real document graph before using a provider model."
+---
+
+[Part 1](/document-pipelines/build) builds a document-to-brief application with parallel fact and action extraction. This part explains its failure policy, runs the integration tests, and shows how to opt into a provider-backed experiment.
+
+## Decide what a failed branch means
+
+Swarms 15.0.3 `GraphWorkflow` catches node exceptions and represents them as `[ERROR]` output strings. It continues through later layers. It also catches exceptions raised by `on_node_complete` callbacks. Raising from a callback therefore does not give this application a reliable way to prevent synthesis.
+
+The companion enforces the dependency policy inside `ValidatedStage.run`, before the stage calls its agent:
+
+1. Locate exactly one message for every expected predecessor.
+2. Decode its versioned envelope and require the expected stage name and `ok` status.
+3. Call the real Swarms agent only when all dependencies are valid.
+4. Require a response recorded by this invocation, parse its JSON, and validate its contract.
+5. Return either validated data or a `blocked` envelope with diagnostic information.
+
+If `Facts` fails, `Actions` can still finish and remain available for diagnosis. `Brief` is reached by the graph, but its adapter does not call the synthesis agent. This is dependency blocking, not cancellation of already running work. The report's top-level `brief` is `null` unless all stages succeeded.
+
+The code also checks that `Agent.short_memory.conversation_history` gained a response under the agent's name during the current call. In this pinned release, an agent may catch a model-backend error and return another value without raising to the caller. Checking the new response prevents treating that return value as an ordinary successful answer. This check depends on the configured `output_type="final"`, one-loop, no-tools agent setup; retest it if you change the agent configuration or Swarms version.
+
+## Keep evidence validation separate from factual judgment
+
+The validator rejects malformed JSON, duplicate object keys, nonstandard constants such as `NaN`, extra fields, incorrect types, duplicate item IDs, nonexistent lines, and quotes that do not match their cited line. It rejects a brief that references an unknown fact or action.
+
+These are mechanical guarantees. An exact quote can still be irrelevant to the statement attached to it. A summary can cite a real fact while changing its meaning. The code does not verify semantic entailment, completeness, inferred ownership, or whether a document's claims are true. Review those properties with representative documents and expected outcomes before using the output for decisions.
+
+The source prompt treats document text as data, and these agents have no tools or external side effects. That instruction is not a proof against prompt injection. If your application later adds tools, keep authorization for those actions outside the document-processing model.
+
+## Exercise a failed handoff
+
+Create a changed fixture that cites a nonexistent source line. This modifies a copy and leaves the working fixture intact:
+
+```python create_invalid_fixture.py
+import json
+from pathlib import Path
+
+source = Path("examples/document-pipeline/scripted-responses.json")
+responses = json.loads(source.read_text(encoding="utf-8"))
+responses["Facts"]["facts"][0]["evidence"][0]["line"] = 999
+Path("invalid-responses.json").write_text(
+    json.dumps(responses, indent=2), encoding="utf-8"
+)
+```
+
+Save that script in the repository root, then run:
+
+```bash
+python create_invalid_fixture.py
+python examples/document-pipeline/pipeline.py --document examples/document-pipeline/meeting.txt --responses invalid-responses.json --output blocked-report.json
+```
+
+The second command exits with status **1**. `Source` and `Actions` are `ok`; `Facts` and `Brief` are `blocked`. `raw_responses.Brief` and the top-level `brief` are both `null`, because synthesis never called its model. The report preserves the invalid fact response and the successful action analysis so you can trace the failure to its source.
+
+| Exit code | Meaning | Report behavior |
+| --- | --- | --- |
+| `0` | All stage contracts passed | Includes a validated brief |
+| `1` | At least one graph stage was blocked | Includes diagnostics; no final brief |
+| `2` | Input, fixture, or file handling failed | Inspect the console error; do not consume an older report at the output path |
+
+Use a distinct output path for each run, and check the process exit status before consuming the file. The example overwrites a chosen report path on completed graph runs; it is not a durable job store or a transactional publication system.
+
+## Test the real orchestration
+
+Run the companion's checks from the repository root:
+
+```bash
+python -m pytest -q examples/document-pipeline/test_pipeline.py
+```
+
+The suite runs actual `GraphWorkflow` and `Agent` implementations with deterministic model backends. It does not replace the graph executor or agent class. The concurrency check makes the facts backend wait for the actions backend, then verifies that synthesis starts only after both have finished. This detects accidental sequential execution without relying on a benchmark or a tight timing threshold.
+
+Other checks cover:
+
+- Both named branch outputs reaching synthesis, including source evidence and nullable action fields.
+- Invalid evidence blocking synthesis while preserving the independent branch.
+- A backend exception caught by `Agent`, and an exception converted into `[ERROR]` by GraphWorkflow.
+- Fresh agents and conversation histories for each document run.
+- Unknown or duplicate references, duplicate JSON keys, wrong types, and malformed responses.
+- Invalid input stopping before graph construction, plus successful and blocked command-line reports.
+
+The published companion was checked on Windows with Python 3.12 and Swarms 15.0.3. The scripted tests establish these orchestration and validation behaviors. They do not measure model quality or provider compatibility.
+
+## Opt into a provider model
+
+First configure credentials for a model you can access, following [model providers](/integrations/model-providers). Use only documents you are authorized to send to that provider. Reports contain the full source text and model answers, so choose a suitable storage location.
+
+Replace `--responses` with `--model`:
+
+```bash
+python examples/document-pipeline/pipeline.py --document examples/document-pipeline/meeting.txt --model openai/gpt-4o-mini --output provider-report.json
+```
+
+This is a separately opted-in provider run and may incur API charges. The example records `mode: "provider"` and the requested model name. Its provider path uses the same contracts and graph as the scripted path, but no live-provider inference is claimed as tested here.
+
+Each normal graph run has two analysis-agent invocations and, if both results validate, one synthesis-agent invocation. This is not a promise of exactly three billable requests: provider adapters may retry, and billing depends on their behavior. `max_parallel_nodes=2` caps simultaneous graph nodes, not aggregate tokens or account spending.
+
+Begin with a small sample and inspect the source citations and missing information manually. Keep failed responses in your report. If a model wraps JSON in Markdown or produces unsupported evidence, improve the prompt or change the model and rerun; the validator deliberately does not repair those answers into success.
+
+## Adapt the pipeline without losing its boundaries
+
+Create a fresh graph and agents for each document, as `run_pipeline` does. Reusing agents can carry earlier documents into conversation history. The example leaves checkpointing off; adding checkpoints requires deciding when a changed document, prompt, schema, or model invalidates saved results.
+
+For longer inputs, design chunk IDs and revision-aware citations before introducing chunked analysis. For PDFs, extract and inspect text first; line references in this tutorial refer to the extracted text, not visual PDF page coordinates. For new stages, define the output contract and failure policy before adding edges. Avoid feeding unvalidated model output directly into a final report or an action-taking system.
+
+You now have a complete document workflow with explicit dependencies, inspectable evidence, and testable failure behavior. Use the [GraphWorkflow reference](/api/graph-workflow) to explore other execution patterns when your application's dependencies require them.

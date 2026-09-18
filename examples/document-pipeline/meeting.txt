@@ -1,0 +1,6 @@
+Atlas pilot meeting, 18 September 2026
+Decision: the pilot will launch on 5 October with the existing export format.
+The data import test passed with 120 synthetic records; production data was not tested.
+Maya will publish the migration checklist by 25 September.
+The team must assign an owner to review accessibility before launch; no owner or date was agreed.
+The billing integration is out of scope for the pilot.

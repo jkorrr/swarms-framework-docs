@@ -291,6 +291,13 @@
             ]
           },
           {
+            "group": "Document Pipelines",
+            "pages": [
+              "document-pipelines/build",
+              "document-pipelines/validate"
+            ]
+          },
+          {
             "group": "Auto Agent Builder",
             "pages": [
               "examples/auto-agent-builder/quickstart",
